@@ -46,3 +46,4 @@ Thumbs.db
 # Build outputs
 /backend/bin/
 /backend/server
+/backend/test-manual

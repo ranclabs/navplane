@@ -63,6 +63,97 @@ cd dashboard && npm install && npm run dev
 - **Dashboard**: http://localhost:3000 (with API proxy)
 - **Backend**: http://localhost:8080
 
+## Configuration
+
+The backend requires the following environment variables:
+
+### Required
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `PROVIDER_BASE_URL` | Base URL for the upstream AI provider | `https://api.openai.com/v1` |
+| `PROVIDER_API_KEY` | API key for the upstream provider | `sk-...` |
+
+### Optional
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `PORT` | HTTP server port | `8080` |
+| `ENV` | Environment (`development`, `staging`, `production`) | `development` |
+
+**Note:** The provider configuration is temporary MVP setup. This will be replaced by BYOK vault and per-organization provider management in future releases.
+
+**Example:**
+
+```bash
+export PROVIDER_BASE_URL="https://api.openai.com/v1"
+export PROVIDER_API_KEY="sk-..."
+cd backend && go run cmd/server/main.go
+```
+
+The service will fail fast on startup if required environment variables are missing.
+
+### Testing in Production Environment
+
+#### 1. Using Docker Compose (Recommended)
+
+Create a `.env` file in the project root:
+
+```bash
+# .env
+ENV=production
+PROVIDER_BASE_URL=https://api.openai.com/v1
+PROVIDER_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+Then start the services:
+
+```bash
+# Build and start with environment variables
+docker compose up -d
+
+# Verify backend started successfully
+docker compose logs backend
+
+# You should see: "NavPlane server starting on :8080 (env: production)"
+```
+
+#### 2. Direct Binary Execution
+
+```bash
+# Build the binary
+cd backend && go build -o navplane ./cmd/server
+
+# Set environment variables and run
+export ENV=production
+export PROVIDER_BASE_URL="https://api.openai.com/v1"
+export PROVIDER_API_KEY="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+./navplane
+```
+
+#### 3. Testing Fail-Fast Behavior
+
+Verify the service fails immediately when configuration is missing:
+
+```bash
+# Test without any provider config
+docker compose up backend
+# Expected: "failed to load configuration: missing required environment variables: [PROVIDER_BASE_URL PROVIDER_API_KEY]"
+
+# Test with only one variable
+PROVIDER_BASE_URL="https://api.openai.com/v1" docker compose up backend
+# Expected: "failed to load configuration: missing required environment variables: [PROVIDER_API_KEY]"
+```
+
+#### 4. Production Deployment Checklist
+
+- [ ] Set `ENV=production`
+- [ ] Set `PROVIDER_BASE_URL` to your AI provider endpoint
+- [ ] Set `PROVIDER_API_KEY` securely (use secrets manager, not plain text)
+- [ ] Verify service starts successfully
+- [ ] Check logs show correct environment
+- [ ] Never commit `.env` file with real credentials
+
 ## API Endpoints
 
 | Endpoint | Method | Description |

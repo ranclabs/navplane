@@ -20,7 +20,7 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux)
+	handler.RegisterRoutes(mux, cfg)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
