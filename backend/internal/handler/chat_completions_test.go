@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -414,8 +415,9 @@ func TestChatCompletions_EmptyBody(t *testing.T) {
 	}
 }
 
-func TestChatCompletions_StreamingReturns501(t *testing.T) {
-	// Test: stream: true returns 501 Not Implemented
+func TestChatCompletions_StreamingReturns501_DeprecatedHandler(t *testing.T) {
+	// Test: stream: true returns 501 Not Implemented for deprecated handler
+	// Note: This tests the deprecated ChatCompletions function, not the real handler
 	body := `{
 		"model": "gpt-4",
 		"messages": [{"role": "user", "content": "Hello"}],
@@ -717,10 +719,38 @@ func TestChatCompletionsHandler_PreservesUnknownFields(t *testing.T) {
 	}
 }
 
-func TestChatCompletionsHandler_StreamingReturns501(t *testing.T) {
-	// Test that stream: true returns 501 even with a valid provider
+func TestChatCompletionsHandler_StreamingBasic(t *testing.T) {
+	// Test that stream: true returns SSE response with proper headers
+	sseEvents := []string{
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+		"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+		"data: [DONE]\n\n",
+	}
+
 	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Error("provider should not be called for streaming requests")
+		// Verify Accept header
+		if r.Header.Get("Accept") != "text/event-stream" {
+			t.Errorf("expected Accept header 'text/event-stream', got %s", r.Header.Get("Accept"))
+		}
+
+		// Verify Authorization header is server key, not client key
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer test-api-key-12345678901234567890" {
+			t.Errorf("expected server API key, got %s", auth)
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected flusher support")
+		}
+
+		for _, event := range sseEvents {
+			w.Write([]byte(event))
+			flusher.Flush()
+		}
 	}))
 	defer fakeProvider.Close()
 
@@ -737,8 +767,321 @@ func TestChatCompletionsHandler_StreamingReturns501(t *testing.T) {
 
 	handler(rec, req)
 
-	if rec.Code != http.StatusNotImplemented {
-		t.Errorf("expected status 501, got %d", rec.Code)
+	// Verify status
+	if rec.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", rec.Code)
+	}
+
+	// Verify SSE headers
+	contentType := rec.Header().Get("Content-Type")
+	if contentType != "text/event-stream" {
+		t.Errorf("expected Content-Type 'text/event-stream', got '%s'", contentType)
+	}
+
+	cacheControl := rec.Header().Get("Cache-Control")
+	if cacheControl != "no-cache" {
+		t.Errorf("expected Cache-Control 'no-cache', got '%s'", cacheControl)
+	}
+
+	connection := rec.Header().Get("Connection")
+	if connection != "keep-alive" {
+		t.Errorf("expected Connection 'keep-alive', got '%s'", connection)
+	}
+
+	// Verify response body contains all events
+	respBody := rec.Body.String()
+	for _, event := range sseEvents {
+		if !strings.Contains(respBody, event) {
+			t.Errorf("expected response to contain %q", event)
+		}
+	}
+}
+
+func TestChatCompletionsHandler_StreamingIncrementalDelivery(t *testing.T) {
+	// Test that events are streamed incrementally (not buffered)
+	eventCount := 0
+	eventChan := make(chan string, 10)
+
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected flusher support")
+		}
+
+		// Send events slowly with flush between each
+		events := []string{
+			"data: {\"chunk\":1}\n\n",
+			"data: {\"chunk\":2}\n\n",
+			"data: {\"chunk\":3}\n\n",
+			"data: [DONE]\n\n",
+		}
+
+		for _, event := range events {
+			eventChan <- event
+			w.Write([]byte(event))
+			flusher.Flush()
+			time.Sleep(10 * time.Millisecond)
+		}
+		close(eventChan)
+	}))
+	defer fakeProvider.Close()
+
+	handler := createTestHandler(fakeProvider.URL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	// Count events received
+	for range eventChan {
+		eventCount++
+	}
+
+	if eventCount != 4 {
+		t.Errorf("expected 4 events, got %d", eventCount)
+	}
+
+	// Verify all content was received
+	respBody := rec.Body.String()
+	if !strings.Contains(respBody, "data: [DONE]") {
+		t.Error("expected response to contain DONE marker")
+	}
+}
+
+func TestChatCompletionsHandler_StreamingNon200Passthrough(t *testing.T) {
+	// Test that non-200 responses are passed through without SSE headers
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error": map[string]any{
+				"message": "Rate limit exceeded",
+				"type":    "rate_limit_error",
+			},
+		})
+	}))
+	defer fakeProvider.Close()
+
+	handler := createTestHandler(fakeProvider.URL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	// Verify status code is passed through
+	if rec.Code != http.StatusTooManyRequests {
+		t.Errorf("expected status 429, got %d", rec.Code)
+	}
+
+	// Verify Content-Type is NOT text/event-stream
+	contentType := rec.Header().Get("Content-Type")
+	if contentType == "text/event-stream" {
+		t.Error("non-200 response should not have SSE Content-Type")
+	}
+
+	// Verify error body is passed through
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	errObj := resp["error"].(map[string]any)
+	if errObj["type"] != "rate_limit_error" {
+		t.Errorf("expected error type 'rate_limit_error', got %v", errObj["type"])
+	}
+}
+
+func TestChatCompletionsHandler_StreamingClientDisconnect(t *testing.T) {
+	// Test that client disconnect cancels upstream request
+	upstreamCancelled := make(chan bool, 1)
+
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("expected flusher support")
+		}
+
+		// Send first event
+		w.Write([]byte("data: {\"chunk\":1}\n\n"))
+		flusher.Flush()
+
+		// Wait for context cancellation (client disconnect)
+		select {
+		case <-r.Context().Done():
+			upstreamCancelled <- true
+		case <-time.After(2 * time.Second):
+			upstreamCancelled <- false
+		}
+	}))
+	defer fakeProvider.Close()
+
+	handler := createTestHandler(fakeProvider.URL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+
+	// Create a request with a cancellable context
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = req.WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	// Start the handler in a goroutine
+	done := make(chan struct{})
+	go func() {
+		handler(rec, req)
+		close(done)
+	}()
+
+	// Give it time to start streaming
+	time.Sleep(50 * time.Millisecond)
+
+	// Cancel the context (simulate client disconnect)
+	cancel()
+
+	// Wait for handler to complete
+	select {
+	case <-done:
+		// Handler completed
+	case <-time.After(3 * time.Second):
+		t.Fatal("handler did not complete after context cancellation")
+	}
+
+	// Verify upstream detected the cancellation
+	select {
+	case cancelled := <-upstreamCancelled:
+		if !cancelled {
+			t.Error("expected upstream to detect context cancellation")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for upstream cancellation signal")
+	}
+}
+
+func TestChatCompletionsHandler_StreamingProviderUnavailable(t *testing.T) {
+	// Test that connection failures return 502 Bad Gateway
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	providerURL := fakeProvider.URL
+	fakeProvider.Close() // Close immediately to simulate unavailable provider
+
+	handler := createTestHandler(providerURL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("expected status 502, got %d", rec.Code)
+	}
+
+	// Verify Content-Type is NOT text/event-stream
+	contentType := rec.Header().Get("Content-Type")
+	if contentType == "text/event-stream" {
+		t.Error("error response should not have SSE Content-Type")
+	}
+
+	// Verify error response
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+	errObj := resp["error"].(map[string]any)
+	if errObj["type"] != "upstream_error" {
+		t.Errorf("expected error type 'upstream_error', got %v", errObj["type"])
+	}
+}
+
+func TestChatCompletionsHandler_StreamingDoesNotForwardClientAuth(t *testing.T) {
+	// Test that client Authorization header is NOT forwarded in streaming
+	var receivedAuth string
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer fakeProvider.Close()
+
+	handler := createTestHandler(fakeProvider.URL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer client-secret-key-should-not-be-forwarded")
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	// Verify that the provider received the server's API key, not the client's
+	if receivedAuth == "Bearer client-secret-key-should-not-be-forwarded" {
+		t.Error("client Authorization header was incorrectly forwarded to provider")
+	}
+	if receivedAuth != "Bearer test-api-key-12345678901234567890" {
+		t.Errorf("expected server API key to be used, got %s", receivedAuth)
+	}
+}
+
+func TestChatCompletionsHandler_StreamingForwardsXRequestID(t *testing.T) {
+	// Test that X-Request-ID is forwarded in streaming requests
+	var receivedRequestID string
+	fakeProvider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedRequestID = r.Header.Get("X-Request-ID")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer fakeProvider.Close()
+
+	handler := createTestHandler(fakeProvider.URL)
+
+	body := `{
+		"model": "gpt-4",
+		"messages": [{"role": "user", "content": "Hello"}],
+		"stream": true
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Request-ID", "stream-req-12345")
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	if receivedRequestID != "stream-req-12345" {
+		t.Errorf("expected X-Request-ID 'stream-req-12345', got %s", receivedRequestID)
 	}
 }
 
