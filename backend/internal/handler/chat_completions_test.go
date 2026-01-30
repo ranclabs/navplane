@@ -11,8 +11,25 @@ import (
 	"testing"
 	"time"
 
+	"navplane/internal/auth"
 	"navplane/internal/config"
 )
+
+// mockAuthStore is a test auth store that always returns a valid org context.
+type mockAuthStore struct{}
+
+func (m *mockAuthStore) ValidateToken(ctx context.Context, token string) (*auth.OrgContext, error) {
+	// Always return a valid org for testing
+	return &auth.OrgContext{
+		OrgID:   "test-org-id",
+		OrgName: "Test Org",
+		Enabled: true,
+	}, nil
+}
+
+func (m *mockAuthStore) Close() error {
+	return nil
+}
 
 // ========================================================================
 // Validation Tests (using ChatCompletions without provider - returns 503 for valid requests)
@@ -461,7 +478,9 @@ func TestChatCompletions_StreamingReturns501_DeprecatedHandler(t *testing.T) {
 // Integration Tests with Fake Provider
 // ========================================================================
 
-// createTestHandler creates a handler with a fake provider for testing
+// createTestHandler creates a handler with a fake provider for testing.
+// Uses a mock auth store that always succeeds, so tests must include
+// an Authorization header (any valid Bearer token will work).
 func createTestHandler(fakeProviderURL string) http.HandlerFunc {
 	cfg := &config.Config{
 		Port:        "8080",
@@ -473,11 +492,16 @@ func createTestHandler(fakeProviderURL string) http.HandlerFunc {
 	}
 
 	mux := http.NewServeMux()
-	RegisterRoutes(mux, cfg)
+	RegisterRoutes(mux, cfg, &mockAuthStore{})
 
 	return func(w http.ResponseWriter, r *http.Request) {
 		mux.ServeHTTP(w, r)
 	}
+}
+
+// addTestAuth adds a test Authorization header to the request.
+func addTestAuth(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer test-token")
 }
 
 func TestChatCompletionsHandler_ForwardsToProvider(t *testing.T) {
@@ -539,6 +563,7 @@ func TestChatCompletionsHandler_ForwardsToProvider(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -580,6 +605,7 @@ func TestChatCompletionsHandler_PreservesProviderStatusCode(t *testing.T) {
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -659,6 +685,7 @@ func TestChatCompletionsHandler_ForwardsXRequestID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-ID", "req-12345")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -698,6 +725,7 @@ func TestChatCompletionsHandler_PreservesUnknownFields(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -763,6 +791,7 @@ func TestChatCompletionsHandler_StreamingBasic(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -838,6 +867,7 @@ func TestChatCompletionsHandler_StreamingIncrementalDelivery(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -881,6 +911,7 @@ func TestChatCompletionsHandler_StreamingNon200Passthrough(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -947,6 +978,7 @@ func TestChatCompletionsHandler_StreamingClientDisconnect(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req = req.WithContext(ctx)
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	// Start the handler in a goroutine
@@ -996,6 +1028,7 @@ func TestChatCompletionsHandler_StreamingProviderUnavailable(t *testing.T) {
 	}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -1076,6 +1109,7 @@ func TestChatCompletionsHandler_StreamingForwardsXRequestID(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Request-ID", "stream-req-12345")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -1097,6 +1131,7 @@ func TestChatCompletionsHandler_ProviderUnavailable(t *testing.T) {
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -1130,6 +1165,7 @@ func TestChatCompletionsHandler_PreservesContentType(t *testing.T) {
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
+	addTestAuth(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -1186,6 +1222,7 @@ func TestChatCompletionsHandler_ValidationStillWorks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(tt.body))
 			req.Header.Set("Content-Type", "application/json")
+			addTestAuth(req)
 			rec := httptest.NewRecorder()
 
 			handler(rec, req)

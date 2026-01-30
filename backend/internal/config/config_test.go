@@ -9,6 +9,7 @@ func TestLoad_Success(t *testing.T) {
 	// Set required environment variables
 	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
 	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	cfg, err := Load()
 	if err != nil {
@@ -22,10 +23,15 @@ func TestLoad_Success(t *testing.T) {
 	if cfg.Provider.APIKey != "sk-test-key-12345678901234567890" {
 		t.Errorf("expected APIKey to be 'sk-test-key-12345678901234567890', got: %s", cfg.Provider.APIKey)
 	}
+
+	if cfg.Database.URL != "postgres://user:pass@localhost:5432/testdb?sslmode=disable" {
+		t.Errorf("expected Database.URL to be set, got: %s", cfg.Database.URL)
+	}
 }
 
 func TestLoad_MissingProviderBaseURL(t *testing.T) {
 	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	_, err := Load()
 	if err == nil {
@@ -39,6 +45,7 @@ func TestLoad_MissingProviderBaseURL(t *testing.T) {
 
 func TestLoad_MissingProviderAPIKey(t *testing.T) {
 	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	_, err := Load()
 	if err == nil {
@@ -70,6 +77,7 @@ func TestLoad_MissingBothProviderVars(t *testing.T) {
 func TestLoad_WithDefaults(t *testing.T) {
 	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
 	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	cfg, err := Load()
 	if err != nil {
@@ -119,6 +127,7 @@ func TestLoad_InvalidBaseURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PROVIDER_BASE_URL", tt.baseURL)
 			t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 			_, err := Load()
 			if err == nil {
@@ -169,6 +178,7 @@ func TestLoad_InvalidAPIKey(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
 			t.Setenv("PROVIDER_API_KEY", tt.apiKey)
+			t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 			_, err := Load()
 			if err == nil {
@@ -177,6 +187,90 @@ func TestLoad_InvalidAPIKey(t *testing.T) {
 
 			if !strings.Contains(err.Error(), tt.expectError) {
 				t.Errorf("expected error containing %q, got: %v", tt.expectError, err)
+			}
+		})
+	}
+}
+
+func TestLoad_MissingDatabaseURL(t *testing.T) {
+	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected error for missing DATABASE_URL, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "DATABASE_URL") {
+		t.Errorf("error message should mention DATABASE_URL, got: %v", err)
+	}
+}
+
+func TestLoad_InvalidDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		databaseURL string
+	}{
+		{
+			name:        "mysql scheme",
+			databaseURL: "mysql://user:pass@localhost:3306/db",
+		},
+		{
+			name:        "http scheme",
+			databaseURL: "http://localhost:5432/db",
+		},
+		{
+			name:        "no scheme",
+			databaseURL: "localhost:5432/db",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
+			t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+			t.Setenv("DATABASE_URL", tt.databaseURL)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("expected error for invalid DATABASE_URL, got nil")
+			}
+
+			if !strings.Contains(err.Error(), "postgres://") {
+				t.Errorf("error message should mention postgres://, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_ValidDatabaseURL(t *testing.T) {
+	tests := []struct {
+		name        string
+		databaseURL string
+	}{
+		{
+			name:        "postgres scheme",
+			databaseURL: "postgres://user:pass@localhost:5432/db?sslmode=disable",
+		},
+		{
+			name:        "postgresql scheme",
+			databaseURL: "postgresql://user:pass@localhost:5432/db?sslmode=disable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
+			t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+			t.Setenv("DATABASE_URL", tt.databaseURL)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			if cfg.Database.URL != tt.databaseURL {
+				t.Errorf("expected Database.URL = %q, got %q", tt.databaseURL, cfg.Database.URL)
 			}
 		})
 	}

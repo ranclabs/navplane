@@ -15,10 +15,16 @@ type ProviderConfig struct {
 	APIKey  string
 }
 
+// DatabaseConfig holds database connection settings.
+type DatabaseConfig struct {
+	URL string // PostgreSQL connection string
+}
+
 type Config struct {
 	Port        string
 	Environment string
 	Provider    ProviderConfig
+	Database    DatabaseConfig
 }
 
 // Load reads configuration from environment variables.
@@ -52,6 +58,12 @@ func Load() (*Config, error) {
 		missing = append(missing, "PROVIDER_API_KEY")
 	}
 
+	// Load database configuration (required for auth)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		missing = append(missing, "DATABASE_URL")
+	}
+
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables: %v", missing)
 	}
@@ -66,12 +78,20 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid PROVIDER_API_KEY: %w", err)
 	}
 
+	// Validate database URL format
+	if err := validateDatabaseURL(databaseURL); err != nil {
+		return nil, fmt.Errorf("invalid DATABASE_URL: %w", err)
+	}
+
 	return &Config{
 		Port:        port,
 		Environment: env,
 		Provider: ProviderConfig{
 			BaseURL: providerBaseURL,
 			APIKey:  providerAPIKey,
+		},
+		Database: DatabaseConfig{
+			URL: databaseURL,
 		},
 	}, nil
 }
@@ -118,5 +138,14 @@ func validateAPIKey(apiKey string) error {
 		}
 	}
 
+	return nil
+}
+
+// validateDatabaseURL performs basic validation on the database URL.
+// Ensures it uses a PostgreSQL scheme.
+func validateDatabaseURL(databaseURL string) error {
+	if !strings.HasPrefix(databaseURL, "postgres://") && !strings.HasPrefix(databaseURL, "postgresql://") {
+		return fmt.Errorf("must start with postgres:// or postgresql://")
+	}
 	return nil
 }

@@ -1,6 +1,6 @@
 .PHONY: dev dev-backend dev-dashboard build build-backend build-dashboard clean install \
         docker docker-build docker-up docker-down docker-logs \
-        db-up db-down migrate migrate-up migrate-down migrate-create migrate-status
+        db-up db-down db-seed migrate migrate-up migrate-down migrate-create migrate-status
 
 # Database URL for local development (port 5434 to avoid conflicts with local postgres)
 DATABASE_URL ?= postgres://navplane:navplane@localhost:5434/navplane?sslmode=disable
@@ -52,6 +52,13 @@ db-up:
 
 db-down:
 	docker compose stop postgres
+
+db-seed:
+	@echo "Seeding database with test data..."
+	psql "$(DATABASE_URL)" -f backend/scripts/seed_dev.sql
+	@echo ""
+	@echo "Test token created: test-token-for-dev"
+	@echo "Use with: Authorization: Bearer test-token-for-dev"
 
 # Migrations (requires golang-migrate CLI)
 # Install: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
@@ -117,6 +124,7 @@ help:
 	@echo "Database:"
 	@echo "  db-up          - Start postgres container"
 	@echo "  db-down        - Stop postgres container"
+	@echo "  db-seed        - Seed database with test org and token"
 	@echo "  migrate        - Run all pending migrations (alias for migrate-up)"
 	@echo "  migrate-up     - Run all pending migrations"
 	@echo "  migrate-down   - Rollback last migration"

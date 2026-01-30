@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"navplane/internal/auth"
 	"navplane/internal/config"
 	"navplane/internal/handler"
 )
@@ -19,8 +20,17 @@ func main() {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
+	// Initialize auth store (database connection for token validation)
+	authStore, err := auth.NewPostgresAuthStoreFromURL(cfg.Database.URL)
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+	defer authStore.Close()
+
+	log.Println("connected to database")
+
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux, cfg)
+	handler.RegisterRoutes(mux, cfg, authStore)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,

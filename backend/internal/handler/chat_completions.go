@@ -30,6 +30,10 @@ var streamingHTTPClient = &http.Client{
 // handleStreamingRequest handles SSE streaming passthrough for chat completions.
 // It forwards the request to the upstream provider and streams the response back
 // to the client without buffering or transforming the content.
+//
+// Security: Client Authorization header is NEVER forwarded to the upstream provider.
+// The server's configured Provider API key is used instead (line 58).
+// This prevents credential leakage if a client accidentally sends their own key.
 func handleStreamingRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, upstreamURL string, rawBody []byte) {
 	start := time.Now()
 	reqID := r.Header.Get("X-Request-ID")
@@ -55,6 +59,7 @@ func handleStreamingRequest(w http.ResponseWriter, r *http.Request, cfg *config.
 	// Set required headers for upstream
 	upstreamReq.Header.Set("Content-Type", "application/json")
 	upstreamReq.Header.Set("Accept", "text/event-stream")
+	// SECURITY: Always use server's API key, never forward client's Authorization header
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
 
 	// Forward X-Request-ID if present
@@ -281,6 +286,7 @@ func chatCompletionsHandler(cfg *config.Config) http.HandlerFunc {
 
 		// Set required headers for upstream
 		upstreamReq.Header.Set("Content-Type", "application/json")
+		// SECURITY: Always use server's API key, never forward client's Authorization header
 		upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
 
 		// Forward safe headers from client (optional)
@@ -439,9 +445,10 @@ func ForwardRequest(cfg *config.Config, rawBody []byte, clientHeaders http.Heade
 
 	// Set required headers
 	upstreamReq.Header.Set("Content-Type", "application/json")
+	// SECURITY: Always use server's API key, never forward client's Authorization header
 	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
 
-	// Forward X-Request-ID if present
+	// Forward X-Request-ID if present (safe header)
 	if reqID := clientHeaders.Get("X-Request-ID"); reqID != "" {
 		upstreamReq.Header.Set("X-Request-ID", reqID)
 	}
