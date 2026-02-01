@@ -50,9 +50,6 @@ func newHandler(cfg *config.Config, client *http.Client) *chatCompletionsHandler
 }
 
 func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	reqID := r.Header.Get("X-Request-ID")
-
 	// Defense-in-depth: mux routes by method, but check here for direct handler use
 	if r.Method != http.MethodPost {
 		writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
@@ -71,16 +68,17 @@ func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	isStreaming := isStreamingRequest(body)
-
-	if isStreaming {
-		h.handleStreaming(w, r, body, start, reqID)
+	if isStreamingRequest(body) {
+		h.handleStreaming(w, r, body)
 	} else {
 		h.handleNonStreaming(w, r, body)
 	}
 }
 
 func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
+	start := time.Now()
+	reqID := r.Header.Get("X-Request-ID")
+
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
@@ -99,9 +97,11 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			writeProxyError(w, http.StatusGatewayTimeout, "upstream request timed out", "server_error")
+			logRequest(r.URL.Path, http.StatusGatewayTimeout, time.Since(start), reqID)
 			return
 		}
 		writeProxyError(w, http.StatusBadGateway, "failed to reach upstream provider", "server_error")
+		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 		return
 	}
 	defer upstreamResp.Body.Close()
@@ -109,9 +109,14 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 	copyResponseHeaders(w, upstreamResp)
 	w.WriteHeader(upstreamResp.StatusCode)
 	io.Copy(w, upstreamResp.Body)
+
+	logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 }
 
-func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, reqID string) {
+func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
+	start := time.Now()
+	reqID := r.Header.Get("X-Request-ID")
+
 	// No timeout for streaming - runs until upstream closes or client disconnects
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
