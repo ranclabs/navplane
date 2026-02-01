@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -12,102 +11,140 @@ import (
 	"time"
 
 	"navplane/internal/config"
-	"navplane/internal/openai"
 )
 
-// httpClient is the shared HTTP client for upstream requests.
-// Using a shared client enables connection pooling.
-var httpClient = &http.Client{
-	Timeout: 30 * time.Second,
+const (
+	requestTimeout     = 5 * time.Minute
+	maxRequestBodySize = 10 * 1024 * 1024 // 10 MB
+)
+
+// chatCompletionsHandler handles POST /v1/chat/completions as a passthrough proxy.
+//
+// Design goals:
+//  1. Full transparency: Upstream responses (including errors) returned as-is
+//  2. No request validation: Upstream provider validates the request
+//  3. Minimal parsing: Only check stream flag for routing
+//  4. SSE streaming: Stream responses with continuous flushing when stream=true
+//
+// NavPlane errors only for: 405, 400 (read fail), 413, 502, 504
+type chatCompletionsHandler struct {
+	upstreamURL string
+	apiKey      string
+	client      *http.Client
 }
 
-// streamingHTTPClient is used for streaming requests.
-// No timeout since streaming can take an arbitrary amount of time.
-var streamingHTTPClient = &http.Client{
-	Timeout: 0, // No timeout for streaming
+func newHandler(cfg *config.Config, client *http.Client) *chatCompletionsHandler {
+	if client == nil {
+		client = &http.Client{
+			Timeout: 0, // Per-request timeout via context
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
+	}
+	return &chatCompletionsHandler{
+		upstreamURL: strings.TrimSuffix(cfg.Provider.BaseURL, "/") + "/v1/chat/completions",
+		apiKey:      cfg.Provider.APIKey,
+		client:      client,
+	}
 }
 
-// handleStreamingRequest handles SSE streaming passthrough for chat completions.
-// It forwards the request to the upstream provider and streams the response back
-// to the client without buffering or transforming the content.
-func handleStreamingRequest(w http.ResponseWriter, r *http.Request, cfg *config.Config, upstreamURL string, rawBody []byte) {
+func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	reqID := r.Header.Get("X-Request-ID")
 
-	// Create a cancellable context tied to the client's connection
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	// Create the upstream request
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(rawBody))
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "failed to create upstream request",
-				"type":    "server_error",
-			},
-		})
+	// Defense-in-depth: mux routes by method, but check here for direct handler use
+	if r.Method != http.MethodPost {
+		writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
 		return
 	}
 
-	// Set required headers for upstream
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Accept", "text/event-stream")
-	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
+	defer r.Body.Close()
 
-	// Forward X-Request-ID if present
-	if reqID != "" {
-		upstreamReq.Header.Set("X-Request-ID", reqID)
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
+	if err != nil {
+		writeProxyError(w, http.StatusBadRequest, "failed to read request body", "invalid_request_error")
+		return
+	}
+	if len(body) > maxRequestBodySize {
+		writeProxyError(w, http.StatusRequestEntityTooLarge, "request body too large", "invalid_request_error")
+		return
 	}
 
-	// Make the upstream request using streaming client
-	upstreamResp, err := streamingHTTPClient.Do(upstreamReq)
+	isStreaming := isStreamingRequest(body)
+
+	if isStreaming {
+		h.handleStreaming(w, r, body, start, reqID)
+	} else {
+		h.handleNonStreaming(w, r, body)
+	}
+}
+
+func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
+	defer cancel()
+
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.upstreamURL, bytes.NewReader(body))
 	if err != nil {
-		// Check if error is due to context cancellation (client disconnect)
-		if ctx.Err() != nil {
-			// Client disconnected, just return silently
+		writeProxyError(w, http.StatusInternalServerError, "failed to create upstream request", "server_error")
+		return
+	}
+
+	setUpstreamHeaders(upstreamReq, r, h.apiKey)
+
+	upstreamResp, err := h.client.Do(upstreamReq)
+	if err != nil {
+		if r.Context().Err() == context.Canceled {
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadGateway)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "upstream request failed",
-				"type":    "upstream_error",
-			},
-		})
+		if ctx.Err() == context.DeadlineExceeded {
+			writeProxyError(w, http.StatusGatewayTimeout, "upstream request timed out", "server_error")
+			return
+		}
+		writeProxyError(w, http.StatusBadGateway, "failed to reach upstream provider", "server_error")
+		return
+	}
+	defer upstreamResp.Body.Close()
+
+	copyResponseHeaders(w, upstreamResp)
+	w.WriteHeader(upstreamResp.StatusCode)
+	io.Copy(w, upstreamResp.Body)
+}
+
+func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte, start time.Time, reqID string) {
+	// No timeout for streaming - runs until upstream closes or client disconnects
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.upstreamURL, bytes.NewReader(body))
+	if err != nil {
+		writeProxyError(w, http.StatusInternalServerError, "failed to create upstream request", "server_error")
+		return
+	}
+
+	setUpstreamHeaders(upstreamReq, r, h.apiKey)
+	upstreamReq.Header.Set("Accept", "text/event-stream")
+
+	upstreamResp, err := h.client.Do(upstreamReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return // Client disconnected
+		}
+		writeProxyError(w, http.StatusBadGateway, "failed to reach upstream provider", "server_error")
 		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 		return
 	}
 	defer upstreamResp.Body.Close()
 
-	// If upstream returns non-200, don't stream - pass through as regular response
+	// Non-200: pass through as regular response (not SSE)
 	if upstreamResp.StatusCode != http.StatusOK {
-		// Read the error response body
 		upstreamBody, err := io.ReadAll(upstreamResp.Body)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "failed to read upstream error response",
-					"type":    "upstream_error",
-				},
-			})
+			writeProxyError(w, http.StatusBadGateway, "failed to read upstream error response", "server_error")
 			logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 			return
 		}
-
-		// Preserve Content-Type from upstream
-		if ct := upstreamResp.Header.Get("Content-Type"); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		} else {
-			w.Header().Set("Content-Type", "application/json")
-		}
-
-		// Return the upstream response transparently
+		copyResponseHeaders(w, upstreamResp)
 		w.WriteHeader(upstreamResp.StatusCode)
 		w.Write(upstreamBody)
 		logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
@@ -117,60 +154,40 @@ func handleStreamingRequest(w http.ResponseWriter, r *http.Request, cfg *config.
 	// Check if we can flush
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "streaming not supported",
-				"type":    "server_error",
-			},
-		})
+		writeProxyError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
 		return
 	}
 
-	// Set SSE headers for the client
+	// Set SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no") // Helps with nginx/reverse proxies
-
-	// Flush headers immediately
+	w.Header().Set("X-Accel-Buffering", "no")
 	flusher.Flush()
 
-	// Stream the response body to the client
-	buf := make([]byte, 4096) // 4KB buffer
+	// Stream response body
+	buf := make([]byte, 4096)
 	for {
-		// Check if client disconnected
 		select {
 		case <-ctx.Done():
-			// Client disconnected, stop streaming
 			return
 		default:
-			// Continue reading
 		}
 
 		n, err := upstreamResp.Body.Read(buf)
 		if n > 0 {
-			// Write the chunk to the client
-			_, writeErr := w.Write(buf[:n])
-			if writeErr != nil {
-				// Client likely disconnected mid-stream
+			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
 				return
 			}
-			// Flush after each write
 			flusher.Flush()
 		}
-
 		if err != nil {
 			if err == io.EOF {
-				// Stream completed successfully
 				break
 			}
-			// Check if it's due to context cancellation
 			if ctx.Err() != nil {
 				return
 			}
-			// Network error mid-stream - just stop (can't write error mid-SSE)
 			break
 		}
 	}
@@ -178,8 +195,64 @@ func handleStreamingRequest(w http.ResponseWriter, r *http.Request, cfg *config.
 	logRequest(r.URL.Path, http.StatusOK, time.Since(start), reqID)
 }
 
-// logRequest logs a minimal request summary.
-// Does NOT log request/response bodies or API keys.
+func isStreamingRequest(body []byte) bool {
+	var partial struct {
+		Stream *bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &partial); err != nil {
+		return false
+	}
+	return partial.Stream != nil && *partial.Stream
+}
+
+func setUpstreamHeaders(upstream *http.Request, original *http.Request, apiKey string) {
+	upstream.Header.Set("Content-Type", "application/json")
+	upstream.Header.Set("User-Agent", "NavPlane/1.0")
+	// SECURITY: Always use provider key, never forward client auth
+	upstream.Header.Set("Authorization", "Bearer "+apiKey)
+
+	if v := original.Header.Get("Accept"); v != "" {
+		upstream.Header.Set("Accept", v)
+	}
+	if v := original.Header.Get("OpenAI-Organization"); v != "" {
+		upstream.Header.Set("OpenAI-Organization", v)
+	}
+	if v := original.Header.Get("X-Request-ID"); v != "" {
+		upstream.Header.Set("X-Request-ID", v)
+	}
+}
+
+func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
+	headers := []string{
+		"Content-Type",
+		"Content-Length",
+		"Content-Encoding",
+		"X-Request-Id",
+		"X-RateLimit-Limit-Requests",
+		"X-RateLimit-Limit-Tokens",
+		"X-RateLimit-Remaining-Requests",
+		"X-RateLimit-Remaining-Tokens",
+		"X-RateLimit-Reset-Requests",
+		"X-RateLimit-Reset-Tokens",
+	}
+	for _, h := range headers {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+}
+
+func writeProxyError(w http.ResponseWriter, statusCode int, message, errorType string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(statusCode)
+	json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errorType,
+		},
+	})
+}
+
 func logRequest(path string, status int, duration time.Duration, reqID string) {
 	if reqID != "" {
 		log.Printf("route=%s status=%d duration=%s request_id=%s", path, status, duration, reqID)
@@ -188,263 +261,12 @@ func logRequest(path string, status int, duration time.Duration, reqID string) {
 	}
 }
 
-// chatCompletionsHandler returns an HTTP handler that forwards requests to the upstream provider.
-// This pattern allows the handler to access provider configuration.
-//
-// Current behavior:
-//   - Parses and validates the request body
-//   - For non-streaming requests: forwards to upstream provider and returns response
-//   - For streaming requests: SSE passthrough with continuous flushing
-//   - Returns 400 Bad Request for invalid JSON or validation errors
-//   - Returns 405 Method Not Allowed for non-POST requests
-//   - Returns 502 Bad Gateway if upstream call fails
-//
-// Security notes:
-//   - Request bodies are intentionally not logged
-//   - Client Authorization header is never forwarded upstream
-//   - Provider API key is injected server-side
-func chatCompletionsHandler(cfg *config.Config) http.HandlerFunc {
-	// Pre-compute the upstream URL (handle trailing slash)
-	upstreamURL := strings.TrimSuffix(cfg.Provider.BaseURL, "/") + "/v1/chat/completions"
-
-	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-
-		// Only allow POST method
-		if r.Method != http.MethodPost {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "method not allowed",
-					"type":    "invalid_request_error",
-				},
-			})
-			return
-		}
-
-		// Read the raw request body (preserve for forwarding)
-		rawBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "failed to read request body",
-					"type":    "invalid_request_error",
-				},
-			})
-			return
-		}
-
-		// Parse the request body
-		var req openai.ChatCompletionsRequest
-		if err := json.Unmarshal(rawBody, &req); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "invalid JSON: " + err.Error(),
-					"type":    "invalid_request_error",
-				},
-			})
-			return
-		}
-
-		// Validate the request
-		if err := req.Validate(); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": err.Error(),
-					"type":    "invalid_request_error",
-				},
-			})
-			return
-		}
-
-		// Check for streaming
-		if req.Stream != nil && *req.Stream {
-			handleStreamingRequest(w, r, cfg, upstreamURL, rawBody)
-			return
-		}
-
-		// Forward the request to the upstream provider
-		upstreamReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, upstreamURL, bytes.NewReader(rawBody))
-		if err != nil {
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "failed to create upstream request",
-					"type":    "server_error",
-				},
-			})
-			return
-		}
-
-		// Set required headers for upstream
-		upstreamReq.Header.Set("Content-Type", "application/json")
-		upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
-
-		// Forward safe headers from client (optional)
-		// Forward X-Request-ID if present, or we could generate one
-		if reqID := r.Header.Get("X-Request-ID"); reqID != "" {
-			upstreamReq.Header.Set("X-Request-ID", reqID)
-		}
-
-		// Make the upstream request
-		upstreamResp, err := httpClient.Do(upstreamReq)
-		if err != nil {
-			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "upstream request failed",
-					"type":    "upstream_error",
-				},
-			})
-			return
-		}
-		defer upstreamResp.Body.Close()
-
-		// Read the upstream response body
-		upstreamBody, err := io.ReadAll(upstreamResp.Body)
-		if err != nil {
-			w.WriteHeader(http.StatusBadGateway)
-			json.NewEncoder(w).Encode(map[string]any{
-				"error": map[string]any{
-					"message": "failed to read upstream response",
-					"type":    "upstream_error",
-				},
-			})
-			return
-		}
-
-		// Preserve Content-Type from upstream (usually application/json)
-		if ct := upstreamResp.Header.Get("Content-Type"); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		}
-
-		// Return the upstream response transparently (same status code and body)
-		w.WriteHeader(upstreamResp.StatusCode)
-		w.Write(upstreamBody)
-	}
+// NewChatCompletionsHandler creates a handler for production use.
+func NewChatCompletionsHandler(cfg *config.Config) http.HandlerFunc {
+	return newHandler(cfg, nil).ServeHTTP
 }
 
-// ChatCompletions is kept for backward compatibility with existing tests.
-// It wraps chatCompletionsHandler with a nil config check for testing scenarios.
-// In production, use chatCompletionsHandler(cfg) via RegisterRoutes.
-//
-// Deprecated: Use chatCompletionsHandler via RegisterRoutes instead.
-func ChatCompletions(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-
-	// Only allow POST method
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "method not allowed",
-				"type":    "invalid_request_error",
-			},
-		})
-		return
-	}
-
-	// Read the raw request body
-	rawBody, err := io.ReadAll(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "failed to read request body",
-				"type":    "invalid_request_error",
-			},
-		})
-		return
-	}
-
-	// Parse the request body
-	var req openai.ChatCompletionsRequest
-	if err := json.Unmarshal(rawBody, &req); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "invalid JSON: " + err.Error(),
-				"type":    "invalid_request_error",
-			},
-		})
-		return
-	}
-
-	// Validate the request
-	if err := req.Validate(); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": err.Error(),
-				"type":    "invalid_request_error",
-			},
-		})
-		return
-	}
-
-	// Check for streaming - not implemented yet
-	if req.Stream != nil && *req.Stream {
-		w.WriteHeader(http.StatusNotImplemented)
-		json.NewEncoder(w).Encode(map[string]any{
-			"error": map[string]any{
-				"message": "streaming not implemented yet",
-				"type":    "not_implemented_error",
-			},
-		})
-		return
-	}
-
-	// This function is for backward compatibility with validation tests.
-	// In production, chatCompletionsHandler handles the upstream forwarding.
-	// Return error indicating no provider configured.
-	w.WriteHeader(http.StatusServiceUnavailable)
-	json.NewEncoder(w).Encode(map[string]any{
-		"error": map[string]any{
-			"message": "no provider configured",
-			"type":    "server_error",
-		},
-	})
-}
-
-// SetHTTPClient allows tests to inject a custom HTTP client.
-// This is useful for testing without making real network calls.
-func SetHTTPClient(client *http.Client) {
-	httpClient = client
-}
-
-// SetStreamingHTTPClient allows tests to inject a custom HTTP client for streaming.
-// This is useful for testing without making real network calls.
-func SetStreamingHTTPClient(client *http.Client) {
-	streamingHTTPClient = client
-}
-
-// buildUpstreamURL constructs the upstream URL for chat completions.
-// Exported for testing purposes.
-func BuildUpstreamURL(baseURL string) string {
-	return strings.TrimSuffix(baseURL, "/") + "/v1/chat/completions"
-}
-
-// ForwardRequest is a test helper that creates and executes an upstream request.
-// This is exported to allow integration testing of the forwarding logic.
-func ForwardRequest(cfg *config.Config, rawBody []byte, clientHeaders http.Header) (*http.Response, error) {
-	upstreamURL := BuildUpstreamURL(cfg.Provider.BaseURL)
-
-	upstreamReq, err := http.NewRequest(http.MethodPost, upstreamURL, bytes.NewReader(rawBody))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create upstream request: %w", err)
-	}
-
-	// Set required headers
-	upstreamReq.Header.Set("Content-Type", "application/json")
-	upstreamReq.Header.Set("Authorization", "Bearer "+cfg.Provider.APIKey)
-
-	// Forward X-Request-ID if present
-	if reqID := clientHeaders.Get("X-Request-ID"); reqID != "" {
-		upstreamReq.Header.Set("X-Request-ID", reqID)
-	}
-
-	return httpClient.Do(upstreamReq)
+// NewChatCompletionsHandlerWithClient creates a handler with custom HTTP client (for testing).
+func NewChatCompletionsHandlerWithClient(cfg *config.Config, client *http.Client) http.HandlerFunc {
+	return newHandler(cfg, client).ServeHTTP
 }
