@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -24,9 +23,8 @@ const (
 //  1. Full transparency: Upstream responses (including errors) returned as-is
 //  2. No request validation: Upstream provider validates the request
 //  3. Minimal parsing: Only check stream flag for routing
-//  4. SSE streaming: Stream responses with continuous flushing when stream=true
 //
-// NavPlane errors only for: 405, 400 (read fail), 413, 502, 504
+// NavPlane errors only for: 405, 400 (read fail), 413, 501 (streaming), 502, 504
 type chatCompletionsHandler struct {
 	upstreamURL string
 	apiKey      string
@@ -36,18 +34,14 @@ type chatCompletionsHandler struct {
 func newHandler(cfg *config.Config, client *http.Client) *chatCompletionsHandler {
 	if client == nil {
 		client = &http.Client{
-			Timeout: 0, // Per-request timeout via context
+			Timeout: 0,
 			CheckRedirect: func(req *http.Request, via []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
 		}
 	}
-	// Normalize base URL: strip trailing slash and /v1 suffix to avoid duplication
-	baseURL := strings.TrimSuffix(cfg.Provider.BaseURL, "/")
-	baseURL = strings.TrimSuffix(baseURL, "/v1")
-
 	return &chatCompletionsHandler{
-		upstreamURL: baseURL + "/v1/chat/completions",
+		upstreamURL: strings.TrimSuffix(cfg.Provider.BaseURL, "/") + "/v1/chat/completions",
 		apiKey:      cfg.Provider.APIKey,
 		client:      client,
 	}
@@ -73,15 +67,9 @@ func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	if isStreamingRequest(body) {
-		h.handleStreaming(w, r, body)
-	} else {
-		h.handleNonStreaming(w, r, body)
+		writeProxyError(w, http.StatusNotImplemented, "streaming not implemented yet", "not_implemented_error")
+		return
 	}
-}
-
-func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
-	start := time.Now()
-	reqID := r.Header.Get("X-Request-ID")
 
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
@@ -97,104 +85,20 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 	upstreamResp, err := h.client.Do(upstreamReq)
 	if err != nil {
 		if r.Context().Err() == context.Canceled {
-			return
+			return // Client disconnected
 		}
 		if ctx.Err() == context.DeadlineExceeded {
 			writeProxyError(w, http.StatusGatewayTimeout, "upstream request timed out", "server_error")
-			logRequest(r.URL.Path, http.StatusGatewayTimeout, time.Since(start), reqID)
 			return
 		}
 		writeProxyError(w, http.StatusBadGateway, "failed to reach upstream provider", "server_error")
-		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 		return
 	}
 	defer upstreamResp.Body.Close()
 
 	copyResponseHeaders(w, upstreamResp)
 	w.WriteHeader(upstreamResp.StatusCode)
-	io.Copy(w, upstreamResp.Body)
-
-	logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
-}
-
-func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
-	start := time.Now()
-	reqID := r.Header.Get("X-Request-ID")
-
-	// No timeout for streaming - runs until upstream closes or client disconnects
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
-
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.upstreamURL, bytes.NewReader(body))
-	if err != nil {
-		writeProxyError(w, http.StatusInternalServerError, "failed to create upstream request", "server_error")
-		return
-	}
-
-	setUpstreamHeaders(upstreamReq, r, h.apiKey)
-	upstreamReq.Header.Set("Accept", "text/event-stream")
-
-	upstreamResp, err := h.client.Do(upstreamReq)
-	if err != nil {
-		if ctx.Err() != nil {
-			return // Client disconnected
-		}
-		writeProxyError(w, http.StatusBadGateway, "failed to reach upstream provider", "server_error")
-		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
-		return
-	}
-	defer upstreamResp.Body.Close()
-
-	// Non-200: pass through as regular response (not SSE)
-	if upstreamResp.StatusCode != http.StatusOK {
-		upstreamBody, err := io.ReadAll(upstreamResp.Body)
-		if err != nil {
-			writeProxyError(w, http.StatusBadGateway, "failed to read upstream error response", "server_error")
-			logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
-			return
-		}
-		copyResponseHeaders(w, upstreamResp)
-		w.WriteHeader(upstreamResp.StatusCode)
-		w.Write(upstreamBody)
-		logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
-		return
-	}
-
-	// Check if we can flush
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeProxyError(w, http.StatusInternalServerError, "streaming not supported", "server_error")
-		return
-	}
-
-	// Copy rate limit headers from upstream before setting SSE headers
-	copyRateLimitHeaders(w, upstreamResp)
-
-	// Set SSE headers (these override Content-Type from upstream)
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-	flusher.Flush()
-
-	// Stream response body
-	// Note: Context cancellation closes the HTTP connection, causing Read to return an error.
-	// No explicit select needed - the transport layer handles cancellation.
-	buf := make([]byte, 4096)
-	for {
-		n, err := upstreamResp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return // Client disconnected
-			}
-			flusher.Flush()
-		}
-		if err != nil {
-			break // EOF or error (including context cancellation)
-		}
-	}
-
-	logRequest(r.URL.Path, http.StatusOK, time.Since(start), reqID)
+	io.Copy(w, upstreamResp.Body) // Error ignored: can't send error after headers written
 }
 
 func isStreamingRequest(body []byte) bool {
@@ -219,9 +123,6 @@ func setUpstreamHeaders(upstream *http.Request, original *http.Request, apiKey s
 	if v := original.Header.Get("OpenAI-Organization"); v != "" {
 		upstream.Header.Set("OpenAI-Organization", v)
 	}
-	if v := original.Header.Get("X-Request-ID"); v != "" {
-		upstream.Header.Set("X-Request-ID", v)
-	}
 }
 
 func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
@@ -230,17 +131,6 @@ func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
 		"Content-Length",
 		"Content-Encoding",
 		"X-Request-Id",
-	}
-	for _, h := range headers {
-		if v := resp.Header.Get(h); v != "" {
-			w.Header().Set(h, v)
-		}
-	}
-	copyRateLimitHeaders(w, resp)
-}
-
-func copyRateLimitHeaders(w http.ResponseWriter, resp *http.Response) {
-	rateLimitHeaders := []string{
 		"X-RateLimit-Limit-Requests",
 		"X-RateLimit-Limit-Tokens",
 		"X-RateLimit-Remaining-Requests",
@@ -248,7 +138,7 @@ func copyRateLimitHeaders(w http.ResponseWriter, resp *http.Response) {
 		"X-RateLimit-Reset-Requests",
 		"X-RateLimit-Reset-Tokens",
 	}
-	for _, h := range rateLimitHeaders {
+	for _, h := range headers {
 		if v := resp.Header.Get(h); v != "" {
 			w.Header().Set(h, v)
 		}
@@ -264,14 +154,6 @@ func writeProxyError(w http.ResponseWriter, statusCode int, message, errorType s
 			"type":    errorType,
 		},
 	})
-}
-
-func logRequest(path string, status int, duration time.Duration, reqID string) {
-	if reqID != "" {
-		log.Printf("route=%s status=%d duration=%s request_id=%s", path, status, duration, reqID)
-	} else {
-		log.Printf("route=%s status=%d duration=%s", path, status, duration)
-	}
 }
 
 // NewChatCompletionsHandler creates a handler for production use.
