@@ -52,3 +52,20 @@ CREATE TABLE request_logs (
 CREATE INDEX idx_request_logs_org_id ON request_logs(org_id);
 CREATE INDEX idx_request_logs_created_at ON request_logs(created_at DESC);
 CREATE INDEX idx_request_logs_org_created ON request_logs(org_id, created_at DESC);
+
+-- Trigger function to auto-update updated_at on UPDATE
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_organizations_updated_at
+    BEFORE UPDATE ON organizations
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER trg_provider_keys_updated_at
+    BEFORE UPDATE ON provider_keys
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
