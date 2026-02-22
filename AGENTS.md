@@ -161,9 +161,10 @@ Use semantic commits:
 
 | Variable | Description |
 |----------|-------------|
-| `PROVIDER_BASE_URL` | Upstream AI provider URL |
-| `PROVIDER_API_KEY` | Provider API key |
 | `DATABASE_URL` | PostgreSQL connection string |
+| `ENCRYPTION_KEY` | 32-byte base64-encoded key for encrypting provider API keys |
+| `AUTH0_DOMAIN` | Auth0 tenant domain (e.g., `your-tenant.auth0.com`) |
+| `AUTH0_AUDIENCE` | Auth0 API audience identifier |
 
 ### Optional
 
@@ -173,6 +174,14 @@ Use semantic commits:
 | `ENV` | development | Environment name |
 | `DB_MAX_OPEN_CONNS` | 25 | Max open DB connections |
 | `DB_MAX_IDLE_CONNS` | 5 | Max idle DB connections |
+| `ENCRYPTION_KEY_NEW` | - | New encryption key for rotation (temporary) |
+
+### Deprecated (Removed)
+
+| Variable | Reason |
+|----------|--------|
+| `PROVIDER_BASE_URL` | Provider URLs are now hardcoded per provider |
+| `PROVIDER_API_KEY` | API keys now come from org's BYOK storage |
 
 ## Database
 
@@ -319,13 +328,36 @@ func HashAPIKey(key string) string {
 }
 ```
 
-### Authentication Flow
+### Authentication Flow (API Proxy)
+
+For `/v1/chat/completions` and other proxy endpoints:
 
 1. Extract Bearer token from `Authorization` header
 2. Validate key format (must start with `np_`)
 3. Hash the key and lookup org by hash
 4. Check org is enabled (kill switch)
 5. Inject org into request context
+
+### User Authentication (Dashboard)
+
+For dashboard/admin endpoints, we use Auth0:
+
+1. User logs in via Auth0 (handles passwords, MFA, social login)
+2. Client receives JWT from Auth0
+3. Client sends JWT to NavPlane API: `Authorization: Bearer <jwt>`
+4. NavPlane verifies JWT signature using Auth0 JWKS
+5. Extract `sub` (auth0_user_id), `email`, `name` from claims
+6. Upsert user in `user_identities` table
+7. Check org membership for authorization
+
+### User Types
+
+| Type | Description | Access |
+|------|-------------|--------|
+| **Regular User** | Normal org member | Only their orgs |
+| **Admin User** | Internal NavPlane admin (`is_admin=true`) | All orgs + admin endpoints |
+
+Admin users can also be members of regular orgs.
 
 ### Middleware Pattern
 
@@ -376,6 +408,70 @@ func closeBody(body io.Closer) {
 
 // Usage
 defer closeBody(resp.Body)
+```
+
+## BYOK (Bring Your Own Key)
+
+Organizations store their own provider API keys (OpenAI, Anthropic, etc.) in NavPlane.
+
+### Supported Providers
+
+| Provider | Base URL | Models |
+|----------|----------|--------|
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o1-mini` |
+| **Anthropic** | `https://api.anthropic.com/v1` | `claude-3-5-sonnet-*`, `claude-3-5-haiku-*`, `claude-3-opus-*` |
+
+Provider base URLs are hardcoded - no configuration needed.
+
+### Envelope Encryption
+
+Provider API keys are encrypted using envelope encryption for secure storage and key rotation:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  KEK (Key Encryption Key) - from ENCRYPTION_KEY env     │
+└─────────────────────────────────────────────────────────┘
+                        │ encrypts
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│  DEK (Data Encryption Key) - random per provider key    │
+│  Stored in: provider_keys.encrypted_dek                 │
+└─────────────────────────────────────────────────────────┘
+                        │ encrypts
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│  Provider API Key (e.g., sk-...)                        │
+│  Stored in: provider_keys.encrypted_key                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Key Rotation
+
+To rotate the master encryption key (`ENCRYPTION_KEY`):
+
+1. Set `ENCRYPTION_KEY_NEW` with the new key
+2. Run: `navplane migrate-keys` (re-encrypts all DEKs)
+3. Update `ENCRYPTION_KEY` to the new value
+4. Remove `ENCRYPTION_KEY_NEW`
+
+### Provider Key Validation
+
+When adding a provider key, we validate it by making a test API call:
+- OpenAI: `GET /v1/models`
+- Anthropic: `GET /v1/models` (or minimal chat request)
+
+Invalid keys are rejected before storage.
+
+### Provider Interface
+
+```go
+type Provider interface {
+    Name() string                    // "openai", "anthropic"
+    DisplayName() string             // "OpenAI", "Anthropic"
+    BaseURL() string                 // Hardcoded API URL
+    Models() []Model                 // Supported models
+    ValidateKey(ctx context.Context, key string) error
+}
 ```
 
 ## Admin API

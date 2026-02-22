@@ -54,27 +54,50 @@ _(None currently)_
 
 ### Pending
 
-#### Task 4: BYOK Vault – Secure Provider Key Storage
+#### Task 4: BYOK + Users + Provider System
 **Priority:** High
 
-Implement secure storage for provider API keys using encryption.
+Implement provider key storage, user management (via Auth0), and provider interface.
 
-- [ ] Postgres schema for provider keys (per-org)
-- [ ] Envelope encryption (master key + DEK)
-- [ ] Encrypt on write, decrypt only in memory
-- [ ] Redact sensitive fields from logs
-- [ ] No plaintext keys in DB or logs
+**Database (Migration 000002):**
+- [ ] `user_identities` table (auth0_user_id, email, is_admin)
+- [ ] `org_members` table (user-org many-to-many with roles)
+- [ ] `org_provider_settings` table (enable/disable providers per org)
+- [ ] Update `provider_keys` schema for envelope encryption
 
-#### Task 5: Header Swapping (NavPlane Key → Provider Key)
+**Auth0 Integration:**
+- [ ] JWT verification middleware (JWKS)
+- [ ] Extract user claims from JWT
+- [ ] Upsert user identity on login
+- [ ] Check org membership for authorization
+
+**Provider System:**
+- [ ] Provider interface (Name, BaseURL, Models, ValidateKey)
+- [ ] OpenAI provider implementation
+- [ ] Anthropic provider implementation
+- [ ] Provider registry for lookup
+
+**BYOK Encryption:**
+- [ ] Envelope encryption (KEK encrypts DEK, DEK encrypts key)
+- [ ] Key rotation support via `ENCRYPTION_KEY_NEW`
+- [ ] Validate provider key before storage
+- [ ] Decrypt only in memory at request time
+
+**Org Provider Settings:**
+- [ ] Enable/disable providers per org
+- [ ] Allow/block specific models per org
+
+#### Task 5: Header Swapping + Proxy Director
 **Priority:** High
 
-Swap NavPlane API keys with provider API keys during request forwarding.
+Wire up provider keys to the proxy and rewrite requests.
 
 - [ ] Extract org from request context
-- [ ] Load provider key from vault
-- [ ] Inject correct provider `Authorization` header
+- [ ] Load decrypted provider key from vault
+- [ ] Inject provider-specific `Authorization` header
 - [ ] Remove NavPlane auth headers before forwarding
-- [ ] Fail immediately if key is missing or deleted
+- [ ] Rewrite request URL to provider endpoint
+- [ ] Fail immediately if key is missing or provider disabled
 
 #### Task 6: Reverse Proxy Director
 **Priority:** Medium
@@ -159,8 +182,15 @@ Validate the MVP end-to-end with a real OpenAI client.
 | Decision | Rationale |
 |----------|-----------|
 | Manager/Datastore pattern | Clean separation of business logic and persistence |
-| SHA-256 hashed API keys | Never store plaintext keys |
+| SHA-256 hashed API keys | Never store plaintext NavPlane keys |
 | `np_` key prefix | Easy identification and validation |
 | PostgreSQL triggers for `updated_at` | Auto-update timestamps on modifications |
 | No exposed DB port | Security best practice |
 | sqlmock for testing | Unit test DB operations without real database |
+| Auth0 for user management | Delegate passwords, MFA, social login - not core to product |
+| JWT verification only | No session storage, stateless auth for dashboard |
+| BYOK (Bring Your Own Key) | Orgs provide their own provider API keys |
+| Envelope encryption | Support master key rotation without re-encrypting all data |
+| Hardcoded provider URLs | No config needed - OpenAI/Anthropic URLs are stable |
+| Provider interface | Extensible design for adding new providers |
+| Validate keys on creation | Fail fast - don't store invalid provider keys |
