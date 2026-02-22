@@ -13,6 +13,7 @@ import (
 	"navplane/internal/config"
 	"navplane/internal/database"
 	"navplane/internal/handler"
+	"navplane/internal/org"
 )
 
 func main() {
@@ -47,8 +48,18 @@ func main() {
 		log.Printf("database migrations complete (version: %d)", version)
 	}
 
+	// Initialize org manager
+	orgDatastore := org.NewDatastore(db.DB)
+	orgManager := org.NewManager(orgDatastore)
+
+	// Set up routes with dependencies
+	deps := &handler.Deps{
+		Config:     cfg,
+		OrgManager: orgManager,
+	}
+
 	mux := http.NewServeMux()
-	handler.RegisterRoutes(mux, cfg)
+	handler.RegisterRoutes(mux, deps)
 
 	server := &http.Server{
 		Addr:    ":" + cfg.Port,
