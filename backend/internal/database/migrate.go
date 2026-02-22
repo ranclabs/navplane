@@ -3,6 +3,7 @@ package database
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/database/postgres"
@@ -75,12 +76,19 @@ func closeMigrate(m *migrate.Migrate) {
 }
 
 func (db *DB) newMigrate(migrationsPath string) (*migrate.Migrate, error) {
+	// Normalize to absolute path - file:// URLs require absolute paths
+	// otherwise relative paths are incorrectly parsed as host components
+	absPath, err := filepath.Abs(migrationsPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve migrations path: %w", err)
+	}
+
 	driver, err := postgres.WithInstance(db.DB, &postgres.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create migration driver: %w", err)
 	}
 
-	sourceURL := "file://" + migrationsPath
+	sourceURL := "file://" + absPath
 	m, err := migrate.NewWithDatabaseInstance(sourceURL, "postgres", driver)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create migrate instance: %w", err)
