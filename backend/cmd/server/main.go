@@ -38,8 +38,14 @@ func main() {
 	if err := db.MigrateUp(migrationsPath); err != nil {
 		log.Fatalf("failed to run migrations: %v", err)
 	}
-	version, _, _ := db.MigrateVersion(migrationsPath)
-	log.Printf("database migrations complete (version: %d)", version)
+	version, dirty, err := db.MigrateVersion(migrationsPath)
+	if err != nil {
+		log.Printf("WARNING: failed to get migration version: %v", err)
+	} else if dirty {
+		log.Printf("WARNING: database is in dirty state at version %d - a previous migration failed and manual intervention is required", version)
+	} else {
+		log.Printf("database migrations complete (version: %d)", version)
+	}
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux, cfg)
