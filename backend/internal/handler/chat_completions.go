@@ -112,7 +112,7 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 
 	copyResponseHeaders(w, upstreamResp)
 	w.WriteHeader(upstreamResp.StatusCode)
-	io.Copy(w, upstreamResp.Body)
+	_, _ = io.Copy(w, upstreamResp.Body)
 
 	logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 }
@@ -155,7 +155,7 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 		}
 		copyResponseHeaders(w, upstreamResp)
 		w.WriteHeader(upstreamResp.StatusCode)
-		w.Write(upstreamBody)
+		_, _ = w.Write(upstreamBody)
 		logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 		return
 	}
@@ -258,7 +258,7 @@ func copyRateLimitHeaders(w http.ResponseWriter, resp *http.Response) {
 func writeProxyError(w http.ResponseWriter, statusCode int, message, errorType string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(map[string]any{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    errorType,

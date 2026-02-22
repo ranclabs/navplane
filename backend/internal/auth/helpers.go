@@ -57,7 +57,7 @@ type ErrorDetail struct {
 func WriteJSONError(w http.ResponseWriter, status int, message, errorType string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(APIError{
+	_ = json.NewEncoder(w).Encode(APIError{
 		Error: ErrorDetail{
 			Message: message,
 			Type:    errorType,
