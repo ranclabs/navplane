@@ -1,8 +1,6 @@
 services:
   postgres:
     image: postgres:16-alpine
-    ports:
-      - 5432:5432
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-navplane}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-navplane_dev}
