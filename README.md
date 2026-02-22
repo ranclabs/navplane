@@ -1,205 +1,111 @@
 # NavPlane
 
-NavPlane is a high-performance AI gateway and control plane for governed LLM traffic.
-
-## Project Structure
-
-```
-navplane/
-├── backend/          # Go API server
-├── dashboard/        # React + Vite SPA (Tailwind CSS)
-├── docker-compose.yml
-├── Makefile
-└── README.md
-```
-
-## Prerequisites
-
-**Local Development:**
-- Go 1.22+
-- Node.js 20+
-- npm 10+
-
-**Docker:**
-- Docker 24+
-- Docker Compose v2+
+AI gateway and control plane for governed LLM traffic. Passthrough proxy for OpenAI, Anthropic, etc. with usage tracking and policy-based routing.
 
 ## Quick Start
 
-### Using Docker (Recommended)
+### Prerequisites
+
+- Docker 24+ & Docker Compose v2+
+- Go 1.24+ (for local dev)
+- Auth0 account (for user auth)
+
+### Environment Setup
 
 ```bash
-# Build and start all services
-make docker
+cp .env.example .env
+# Edit .env with your values
+```
 
-# Or step by step:
-docker compose build
+**Required variables:**
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `ENCRYPTION_KEY` | 32-byte base64 key (`openssl rand -base64 32`) |
+| `AUTH0_DOMAIN` | Your Auth0 tenant (e.g., `acme.auth0.com`) |
+| `AUTH0_AUDIENCE` | Auth0 API identifier |
+
+### Run with Docker
+
+```bash
 docker compose up -d
+# Backend: http://localhost:8080
+# Dashboard: http://localhost:3000
 ```
 
-- **Dashboard**: http://localhost:3000
-- **Backend API**: http://localhost:8080
+### Run Locally
 
 ```bash
-# View logs
-make docker-logs
+# Terminal 1 - Start Postgres
+docker compose up -d postgres
 
-# Stop services
-make docker-down
-```
+# Terminal 2 - Backend
+cd backend && go run ./cmd/server
 
-### Local Development
-
-**Terminal 1 - Backend:**
-```bash
-cd backend && go run main.go
-```
-
-**Terminal 2 - Dashboard:**
-```bash
+# Terminal 3 - Dashboard (optional)
 cd dashboard && npm install && npm run dev
 ```
 
-- **Dashboard**: http://localhost:3000 (with API proxy)
-- **Backend**: http://localhost:8080
-
-## Configuration
-
-The backend requires the following environment variables:
-
-### Required
-
-| Variable | Description | Example |
-|----------|-------------|---------|
-| `PROVIDER_BASE_URL` | Base URL for the upstream AI provider | `https://api.openai.com/v1` |
-| `PROVIDER_API_KEY` | API key for the upstream provider | `sk-...` |
-
-### Optional
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `PORT` | HTTP server port | `8080` |
-| `ENV` | Environment (`development`, `staging`, `production`) | `development` |
-
-**Note:** The provider configuration is temporary MVP setup. This will be replaced by BYOK vault and per-organization provider management in future releases.
-
-**Example:**
+## Development
 
 ```bash
-export PROVIDER_BASE_URL="https://api.openai.com/v1"
-export PROVIDER_API_KEY="sk-..."
-cd backend && go run cmd/server/main.go
+cd backend
+go test ./...           # Run tests
+go test -race ./...     # With race detector
+go build ./cmd/server   # Build binary
 ```
 
-The service will fail fast on startup if required environment variables are missing.
+### Project Structure
 
-### Testing in Production Environment
-
-#### 1. Using Docker Compose (Recommended)
-
-Create a `.env` file in the project root:
-
-```bash
-# .env
-ENV=production
-PROVIDER_BASE_URL=https://api.openai.com/v1
-PROVIDER_API_KEY=sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+backend/
+├── cmd/server/       # Entry point
+├── internal/
+│   ├── config/       # Environment config
+│   ├── database/     # PostgreSQL + migrations
+│   ├── handler/      # HTTP handlers
+│   ├── jwtauth/      # Auth0 JWT verification
+│   ├── middleware/   # HTTP middleware
+│   ├── org/          # Organizations
+│   ├── orgsettings/  # Per-org provider settings
+│   ├── provider/     # Provider interface (OpenAI, Anthropic)
+│   ├── providerkey/  # BYOK encrypted storage
+│   └── user/         # User identities
+└── migrations/       # SQL migrations
 ```
 
-Then start the services:
+## API Usage
 
-```bash
-# Build and start with environment variables
-docker compose up -d
+### Proxy Endpoint
 
-# Verify backend started successfully
-docker compose logs backend
+Replace your OpenAI base URL with NavPlane:
 
-# You should see: "NavPlane server starting on :8080 (env: production)"
+```python
+# Before
+client = OpenAI(api_key="sk-...")
+
+# After
+client = OpenAI(
+    api_key="np_your-navplane-key",
+    base_url="http://localhost:8080/v1"
+)
 ```
 
-#### 2. Direct Binary Execution
+### Admin Endpoints
 
-```bash
-# Build the binary
-cd backend && go build -o navplane ./cmd/server
+| Endpoint | Description |
+|----------|-------------|
+| `GET /admin/orgs` | List organizations |
+| `POST /admin/orgs` | Create org (returns API key) |
+| `PUT /admin/orgs/{id}/enabled` | Kill switch |
+| `POST /admin/orgs/{id}/rotate-key` | Rotate API key |
+| `GET /admin/orgs/{id}/provider-keys` | List provider keys |
+| `POST /admin/orgs/{id}/provider-keys` | Add provider key |
 
-# Set environment variables and run
-export ENV=production
-export PROVIDER_BASE_URL="https://api.openai.com/v1"
-export PROVIDER_API_KEY="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-./navplane
-```
+## Commit Convention
 
-#### 3. Testing Fail-Fast Behavior
-
-Verify the service fails immediately when configuration is missing:
-
-```bash
-# Test without any provider config
-docker compose up backend
-# Expected: "failed to load configuration: missing required environment variables: [PROVIDER_BASE_URL PROVIDER_API_KEY]"
-
-# Test with only one variable
-PROVIDER_BASE_URL="https://api.openai.com/v1" docker compose up backend
-# Expected: "failed to load configuration: missing required environment variables: [PROVIDER_API_KEY]"
-```
-
-#### 4. Production Deployment Checklist
-
-- [ ] Set `ENV=production`
-- [ ] Set `PROVIDER_BASE_URL` to your AI provider endpoint
-- [ ] Set `PROVIDER_API_KEY` securely (use secrets manager, not plain text)
-- [ ] Verify service starts successfully
-- [ ] Check logs show correct environment
-- [ ] Never commit `.env` file with real credentials
-
-## API Endpoints
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/api/v1/status` | GET | Service status |
-
-## Building for Production
-
-### With Docker
-
-```bash
-docker compose build
-```
-
-Images:
-- `navplane-backend` - Scratch-based Go binary (~10MB)
-- `navplane-dashboard` - Nginx serving static assets (~25MB)
-
-### Without Docker
-
-```bash
-# Backend
-cd backend && go build -o bin/navplane main.go
-
-# Dashboard
-cd dashboard && npm run build
-```
-
-## Make Targets
-
-```bash
-make help
-```
-
-| Target | Description |
-|--------|-------------|
-| `docker` | Build and start all containers |
-| `docker-build` | Build Docker images |
-| `docker-up` | Start containers |
-| `docker-down` | Stop containers |
-| `docker-logs` | Follow container logs |
-| `dev-backend` | Run Go backend locally |
-| `dev-dashboard` | Run Vite dev server |
-| `build` | Build both services |
-| `lint` | Run dashboard linter |
+Use semantic commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`
 
 ## License
 
