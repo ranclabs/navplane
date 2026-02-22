@@ -4,21 +4,30 @@ import (
 	"net/http"
 
 	"navplane/internal/config"
+	"navplane/internal/middleware"
+	"navplane/internal/org"
 )
 
+// Deps contains dependencies for route handlers.
+type Deps struct {
+	Config     *config.Config
+	OrgManager *org.Manager
+}
+
 // RegisterRoutes registers all HTTP routes with the provided mux.
-// The config is passed to handlers that need access to provider configuration.
-func RegisterRoutes(mux *http.ServeMux, cfg *config.Config) {
+func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 	// Health and status endpoints (no auth required)
 	mux.HandleFunc("GET /health", HealthCheck)
-	mux.HandleFunc("GET /api/v1/status", statusHandler(cfg))
+	mux.HandleFunc("GET /api/v1/status", statusHandler(deps.Config))
 
-	// OpenAI-compatible API endpoints
-	// Uses POST method pattern for proper 405 handling by ServeMux
-	mux.HandleFunc("POST /v1/chat/completions", NewChatCompletionsHandler(cfg))
+	// Auth middleware for protected routes
+	authMiddleware := middleware.Auth(deps.OrgManager)
 
-	// Also register without method to return proper 405 for other methods
-	// This ensures GET, PUT, DELETE, etc. get a proper error response
+	// OpenAI-compatible API endpoints (auth required)
+	chatHandler := NewChatCompletionsHandler(deps.Config)
+	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(chatHandler)))
+
+	// Return proper 405 for other methods on protected endpoints
 	mux.HandleFunc("/v1/chat/completions", methodNotAllowedHandler("POST"))
 }
 
