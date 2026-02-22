@@ -4,6 +4,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 )
@@ -57,12 +58,14 @@ type ErrorDetail struct {
 func WriteJSONError(w http.ResponseWriter, status int, message, errorType string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(APIError{
+	if err := json.NewEncoder(w).Encode(APIError{
 		Error: ErrorDetail{
 			Message: message,
 			Type:    errorType,
 		},
-	})
+	}); err != nil {
+		log.Printf("failed to write JSON error response: %v", err)
+	}
 }
 
 // WriteUnauthorized writes a 401 Unauthorized JSON response.

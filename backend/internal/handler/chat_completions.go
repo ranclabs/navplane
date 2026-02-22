@@ -18,6 +18,12 @@ const (
 	maxRequestBodySize = 10 * 1024 * 1024 // 10 MB
 )
 
+func closeBody(body io.Closer) {
+	if err := body.Close(); err != nil {
+		log.Printf("failed to close body: %v", err)
+	}
+}
+
 // chatCompletionsHandler handles POST /v1/chat/completions as a passthrough proxy.
 //
 // Design goals:
@@ -60,7 +66,7 @@ func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	defer r.Body.Close()
+	defer closeBody(r.Body)
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxRequestBodySize+1))
 	if err != nil {
@@ -108,11 +114,13 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 		return
 	}
-	defer upstreamResp.Body.Close()
+	defer closeBody(upstreamResp.Body)
 
 	copyResponseHeaders(w, upstreamResp)
 	w.WriteHeader(upstreamResp.StatusCode)
-	_, _ = io.Copy(w, upstreamResp.Body)
+	if _, err := io.Copy(w, upstreamResp.Body); err != nil {
+		log.Printf("failed to copy upstream response: %v", err)
+	}
 
 	logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 }
@@ -143,7 +151,7 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 		logRequest(r.URL.Path, http.StatusBadGateway, time.Since(start), reqID)
 		return
 	}
-	defer upstreamResp.Body.Close()
+	defer closeBody(upstreamResp.Body)
 
 	// Non-200: pass through as regular response (not SSE)
 	if upstreamResp.StatusCode != http.StatusOK {
@@ -155,7 +163,9 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 		}
 		copyResponseHeaders(w, upstreamResp)
 		w.WriteHeader(upstreamResp.StatusCode)
-		_, _ = w.Write(upstreamBody)
+		if _, err := w.Write(upstreamBody); err != nil {
+			log.Printf("failed to write upstream error response: %v", err)
+		}
 		logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 		return
 	}
@@ -258,12 +268,14 @@ func copyRateLimitHeaders(w http.ResponseWriter, resp *http.Response) {
 func writeProxyError(w http.ResponseWriter, statusCode int, message, errorType string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(statusCode)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	if err := json.NewEncoder(w).Encode(map[string]any{
 		"error": map[string]any{
 			"message": message,
 			"type":    errorType,
 		},
-	})
+	}); err != nil {
+		log.Printf("failed to write proxy error response: %v", err)
+	}
 }
 
 func logRequest(path string, status int, duration time.Duration, reqID string) {
