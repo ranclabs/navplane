@@ -109,24 +109,48 @@ X-Lectr-Key: lc_key_xxx
 ```
 POST /v1/orgs
 Authorization: Bearer LECTR_ADMIN_SECRET
+Content-Type: application/json
+```
+
+Request body:
+
+```json
+{
+  "name": "My Organization"
+}
 ```
 
 Response:
 
 ```json
 {
-  "org_key": "lc_key_xxx"
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "My Organization",
+  "enabled": true,
+  "org_key": "lc_key_xxx",
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
 }
 ```
+
+`name` is required. `org_key` is only returned at creation time.
 
 **Revoke Org Key**
 
 ```
-POST /v1/orgs/revoke
+POST /v1/orgs/{id}/rotate-key
 Authorization: Bearer LECTR_ADMIN_SECRET
 ```
 
-- Immediately invalidates key
+No request body. The org is identified by `{id}` in the path. Returns a new key; the old key is immediately invalidated.
+
+Response:
+
+```json
+{
+  "org_key": "lc_key_yyy"
+}
+```
 
 **Management API Security (MVP)**
 
@@ -211,6 +235,7 @@ Client → sends OpenAI key → Proxy → forwards → OpenAI
 
 **Event Includes**
 
+- timestamp (captured at request completion, not DB insertion time)
 - provider
 - model_requested / model_actual
 - latency (total + TTFB)
