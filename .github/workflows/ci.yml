@@ -42,13 +42,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_USER: navplane_test
-          POSTGRES_PASSWORD: navplane_test
-          POSTGRES_DB: navplane_test
+          POSTGRES_USER: lectr_test
+          POSTGRES_PASSWORD: lectr_test
+          POSTGRES_DB: lectr_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U navplane_test -d navplane_test"
+          --health-cmd "pg_isready -U lectr_test -d lectr_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -71,22 +71,22 @@ jobs:
 
       - name: Run tests
         env:
-          DATABASE_URL: postgres://navplane_test:navplane_test@localhost:5432/navplane_test?sslmode=disable
+          DATABASE_URL: postgres://lectr_test:lectr_test@localhost:5432/lectr_test?sslmode=disable
         run: go test -v -race -coverprofile=coverage.out ./...
 
       - name: Build binary
-        run: go build -o navplane ./cmd/server
+        run: go build -o lectr ./cmd/server
 
       - name: Run migrations
         env:
-          DATABASE_URL: postgres://navplane_test:navplane_test@localhost:5432/navplane_test?sslmode=disable
+          DATABASE_URL: postgres://lectr_test:lectr_test@localhost:5432/lectr_test?sslmode=disable
           PROVIDER_BASE_URL: https://api.openai.com/v1
           PROVIDER_API_KEY: sk-test-key-for-ci-validation-only
         run: |
           # Start server briefly to run migrations, then stop
-          timeout 5 ./navplane || true
+          timeout 5 ./lectr || true
           # Verify migrations ran by checking tables exist
-          PGPASSWORD=navplane_test psql -h localhost -U navplane_test -d navplane_test -c "\dt" | grep -q organizations
+          PGPASSWORD=lectr_test psql -h localhost -U lectr_test -d lectr_test -c "\dt" | grep -q organizations
 
   docker:
     name: Docker Build
@@ -104,7 +104,7 @@ jobs:
         with:
           context: ./backend
           push: false
-          tags: navplane-backend:test
+          tags: lectr-backend:test
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -113,6 +113,6 @@ jobs:
         with:
           context: ./dashboard
           push: false
-          tags: navplane-dashboard:test
+          tags: lectr-dashboard:test
           cache-from: type=gha
           cache-to: type=gha,mode=max

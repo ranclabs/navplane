@@ -1,13 +1,13 @@
-# NavPlane Development Guidelines
+# Lectr Development Guidelines
 
 ## Project Overview
 
-NavPlane is a high-performance AI gateway and control plane for governed LLM traffic. It acts as a passthrough proxy for various AI providers, tracking usage and enabling policy-based routing.
+Lectr is a high-performance AI gateway and control plane for governed LLM traffic. It acts as a passthrough proxy for various AI providers, tracking usage and enabling policy-based routing.
 
 ## Architecture
 
 ```text
-navplane/
+lectr/
 ├── backend/          # Go API server (net/http, no framework)
 │   ├── cmd/server/   # Entry point
 │   ├── internal/
@@ -37,11 +37,11 @@ internal/<resource>/
 
 ### Layer Responsibilities
 
-| Layer | Responsibility |
-|-------|----------------|
-| **Model** | Pure data structures, no dependencies. Defines the domain object. May include helper functions (e.g., `GenerateAPIKey()`, `HashAPIKey()`). |
-| **Datastore** | Database operations ONLY. Returns raw database errors. No business logic, no domain error translation. |
-| **Manager** | Business logic, validation, coordination. Defines domain errors. Translates raw DB errors to domain errors. Handlers call managers. |
+| Layer         | Responsibility                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Model**     | Pure data structures, no dependencies. Defines the domain object. May include helper functions (e.g., `GenerateAPIKey()`, `HashAPIKey()`). |
+| **Datastore** | Database operations ONLY. Returns raw database errors. No business logic, no domain error translation.                                     |
+| **Manager**   | Business logic, validation, coordination. Defines domain errors. Translates raw DB errors to domain errors. Handlers call managers.        |
 
 ### Datastore Contract (CRITICAL)
 
@@ -122,6 +122,7 @@ Handler → Manager → Datastore → Database
 ## Development Commands
 
 ### Backend
+
 ```bash
 cd backend
 go test ./...              # Run all tests
@@ -131,6 +132,7 @@ go run ./cmd/server        # Run locally
 ```
 
 ### Docker
+
 ```bash
 docker compose up -d       # Start all services
 docker compose logs -f     # Follow logs
@@ -140,6 +142,7 @@ docker compose down        # Stop services
 ## Code Style
 
 ### Go
+
 - Use standard library where possible (no web frameworks)
 - Error messages should be lowercase, no trailing punctuation
 - Always handle errors explicitly
@@ -147,7 +150,9 @@ docker compose down        # Stop services
 - Validate all config at startup (fail-fast)
 
 ### Commit Messages
+
 Use semantic commits:
+
 - `feat:` - New feature
 - `fix:` - Bug fix
 - `refactor:` - Code restructuring
@@ -159,33 +164,34 @@ Use semantic commits:
 
 ### Required
 
-| Variable | Description |
-|----------|-------------|
-| `DATABASE_URL` | PostgreSQL connection string |
+| Variable         | Description                                                 |
+| ---------------- | ----------------------------------------------------------- |
+| `DATABASE_URL`   | PostgreSQL connection string                                |
 | `ENCRYPTION_KEY` | 32-byte base64-encoded key for encrypting provider API keys |
-| `AUTH0_DOMAIN` | Auth0 tenant domain (e.g., `your-tenant.auth0.com`) |
-| `AUTH0_AUDIENCE` | Auth0 API audience identifier |
+| `AUTH0_DOMAIN`   | Auth0 tenant domain (e.g., `your-tenant.auth0.com`)         |
+| `AUTH0_AUDIENCE` | Auth0 API audience identifier                               |
 
 ### Optional
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | 8080 | HTTP server port |
-| `ENV` | development | Environment name |
-| `DB_MAX_OPEN_CONNS` | 25 | Max open DB connections |
-| `DB_MAX_IDLE_CONNS` | 5 | Max idle DB connections |
-| `ENCRYPTION_KEY_NEW` | - | New encryption key for rotation (temporary) |
+| Variable             | Default     | Description                                 |
+| -------------------- | ----------- | ------------------------------------------- |
+| `PORT`               | 8080        | HTTP server port                            |
+| `ENV`                | development | Environment name                            |
+| `DB_MAX_OPEN_CONNS`  | 25          | Max open DB connections                     |
+| `DB_MAX_IDLE_CONNS`  | 5           | Max idle DB connections                     |
+| `ENCRYPTION_KEY_NEW` | -           | New encryption key for rotation (temporary) |
 
 ### Deprecated (Removed)
 
-| Variable | Reason |
-|----------|--------|
+| Variable            | Reason                                       |
+| ------------------- | -------------------------------------------- |
 | `PROVIDER_BASE_URL` | Provider URLs are now hardcoded per provider |
-| `PROVIDER_API_KEY` | API keys now come from org's BYOK storage |
+| `PROVIDER_API_KEY`  | API keys now come from org's BYOK storage    |
 
 ## Database
 
 ### General
+
 - PostgreSQL 16+
 - Migrations run automatically on startup
 - Migration files in `backend/migrations/`
@@ -238,6 +244,7 @@ Use `uuid_generate_v4()` for primary keys. Requires `CREATE EXTENSION IF NOT EXI
 ## Testing
 
 ### General Rules
+
 - Unit tests required for all new code
 - Integration tests for handlers
 - Use `t.Setenv()` for environment-dependent tests
@@ -280,10 +287,10 @@ func TestDatastore_GetByID(t *testing.T) {
 
 ### Testing Datastore vs Manager
 
-| Test Target | What to Test |
-|-------------|--------------|
+| Test Target   | What to Test                                                                               |
+| ------------- | ------------------------------------------------------------------------------------------ |
 | **Datastore** | SQL queries execute correctly, returns raw `sql.ErrNoRows`, returns correct `rowsAffected` |
-| **Manager** | Validation logic, error translation (`sql.ErrNoRows` → `ErrNotFound`), business rules |
+| **Manager**   | Validation logic, error translation (`sql.ErrNoRows` → `ErrNotFound`), business rules      |
 
 ### Manager Tests Without DB
 
@@ -301,12 +308,12 @@ func TestManager_Create_InvalidName(t *testing.T) {
 
 ## Authentication
 
-### NavPlane API Keys
+### Lectr API Keys
 
-- Format: `np_<uuid>` (e.g., `np_550e8400-e29b-41d4-a716-446655440000`)
-- Prefix `np_` allows easy identification and validation
+- Format: `lc_<uuid>` (e.g., `lc_550e8400-e29b-41d4-a716-446655440000`)
+- Prefix `lc_` allows easy identification and validation
 - Keys are hashed with SHA-256 before storage (never store plaintext)
-- Use Bearer token authentication: `Authorization: Bearer np_...`
+- Use Bearer token authentication: `Authorization: Bearer lc_...`
 
 ### Key Generation and Hashing
 
@@ -314,7 +321,7 @@ func TestManager_Create_InvalidName(t *testing.T) {
 // Generate a new API key
 func GenerateAPIKey() *APIKey {
     id := uuid.New().String()
-    plaintext := APIKeyPrefix + id  // "np_" + uuid
+    plaintext := APIKeyPrefix + id  // "lc_" + uuid
     return &APIKey{
         Plaintext: plaintext,
         Hash:      HashAPIKey(plaintext),
@@ -333,7 +340,7 @@ func HashAPIKey(key string) string {
 For `/v1/chat/completions` and other proxy endpoints:
 
 1. Extract Bearer token from `Authorization` header
-2. Validate key format (must start with `np_`)
+2. Validate key format (must start with `lc_`)
 3. Hash the key and lookup org by hash
 4. Check org is enabled (kill switch)
 5. Inject org into request context
@@ -344,18 +351,18 @@ For dashboard/admin endpoints, we use Auth0:
 
 1. User logs in via Auth0 (handles passwords, MFA, social login)
 2. Client receives JWT from Auth0
-3. Client sends JWT to NavPlane API: `Authorization: Bearer <jwt>`
-4. NavPlane verifies JWT signature using Auth0 JWKS
+3. Client sends JWT to Lectr API: `Authorization: Bearer <jwt>`
+4. Lectr verifies JWT signature using Auth0 JWKS
 5. Extract `sub` (auth0_user_id), `email`, `name` from claims
 6. Upsert user in `user_identities` table
 7. Check org membership for authorization
 
 ### User Types
 
-| Type | Description | Access |
-|------|-------------|--------|
-| **Regular User** | Normal org member | Only their orgs |
-| **Admin User** | Internal NavPlane admin (`is_admin=true`) | All orgs + admin endpoints |
+| Type             | Description                            | Access                     |
+| ---------------- | -------------------------------------- | -------------------------- |
+| **Regular User** | Normal org member                      | Only their orgs            |
+| **Admin User**   | Internal Lectr admin (`is_admin=true`) | All orgs + admin endpoints |
 
 Admin users can also be members of regular orgs.
 
@@ -412,13 +419,13 @@ defer closeBody(resp.Body)
 
 ## BYOK (Bring Your Own Key)
 
-Organizations store their own provider API keys (OpenAI, Anthropic, etc.) in NavPlane.
+Organizations store their own provider API keys (OpenAI, Anthropic, etc.) in Lectr.
 
 ### Supported Providers
 
-| Provider | Base URL | Models |
-|----------|----------|--------|
-| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o1-mini` |
+| Provider      | Base URL                       | Models                                                         |
+| ------------- | ------------------------------ | -------------------------------------------------------------- |
+| **OpenAI**    | `https://api.openai.com/v1`    | `gpt-4o`, `gpt-4o-mini`, `gpt-4-turbo`, `o1`, `o1-mini`        |
 | **Anthropic** | `https://api.anthropic.com/v1` | `claude-3-5-sonnet-*`, `claude-3-5-haiku-*`, `claude-3-opus-*` |
 
 Provider base URLs are hardcoded - no configuration needed.
@@ -450,13 +457,14 @@ Provider API keys are encrypted using envelope encryption for secure storage and
 To rotate the master encryption key (`ENCRYPTION_KEY`):
 
 1. Set `ENCRYPTION_KEY_NEW` with the new key
-2. Run: `navplane migrate-keys` (re-encrypts all DEKs)
+2. Run: `lectr migrate-keys` (re-encrypts all DEKs)
 3. Update `ENCRYPTION_KEY` to the new value
 4. Remove `ENCRYPTION_KEY_NEW`
 
 ### Provider Key Validation
 
 When adding a provider key, we validate it by making a test API call:
+
 - OpenAI: `GET /v1/models`
 - Anthropic: `GET /v1/models` (or minimal chat request)
 
@@ -478,15 +486,15 @@ type Provider interface {
 
 ### Endpoints
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/admin/orgs` | List all organizations |
-| `POST` | `/admin/orgs` | Create organization (returns API key) |
-| `GET` | `/admin/orgs/{id}` | Get organization by ID |
-| `PUT` | `/admin/orgs/{id}` | Update organization name |
-| `DELETE` | `/admin/orgs/{id}` | Delete organization |
-| `PUT` | `/admin/orgs/{id}/enabled` | Enable/disable org (kill switch) |
-| `POST` | `/admin/orgs/{id}/rotate-key` | Rotate API key |
+| Method   | Path                          | Description                           |
+| -------- | ----------------------------- | ------------------------------------- |
+| `GET`    | `/admin/orgs`                 | List all organizations                |
+| `POST`   | `/admin/orgs`                 | Create organization (returns API key) |
+| `GET`    | `/admin/orgs/{id}`            | Get organization by ID                |
+| `PUT`    | `/admin/orgs/{id}`            | Update organization name              |
+| `DELETE` | `/admin/orgs/{id}`            | Delete organization                   |
+| `PUT`    | `/admin/orgs/{id}/enabled`    | Enable/disable org (kill switch)      |
+| `POST`   | `/admin/orgs/{id}/rotate-key` | Rotate API key                        |
 
 ### Kill Switch
 
@@ -505,6 +513,7 @@ curl -X PUT http://localhost:8080/admin/orgs/{id}/enabled \
 ```
 
 When disabled:
+
 - All requests with the org's API key return 403 immediately
 - No upstream provider calls are made
 - Re-enabling restores access instantly
@@ -529,7 +538,7 @@ Create and rotate-key responses include the plaintext API key (only time it's av
 {
   "id": "...",
   "name": "...",
-  "api_key": "np_550e8400-e29b-41d4-a716-446655440000"
+  "api_key": "lc_550e8400-e29b-41d4-a716-446655440000"
 }
 ```
 

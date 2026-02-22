@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"navplane/internal/org"
+	"lectr/internal/org"
 
 	"github.com/google/uuid"
 )

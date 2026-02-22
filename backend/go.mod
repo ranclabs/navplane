@@ -1,4 +1,4 @@
-module navplane
+module lectr
 
 go 1.24.0
 

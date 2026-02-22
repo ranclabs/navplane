@@ -1,4 +1,4 @@
-// Package auth provides authentication helpers for NavPlane.
+// Package auth provides authentication helpers for Lectr.
 package auth
 
 import (

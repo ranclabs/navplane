@@ -14,7 +14,7 @@ RUN go mod download
 COPY . .
 
 # Build the binary
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o navplane ./cmd/server
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o lectr ./cmd/server
 
 # Runtime stage
 FROM alpine:3.19
@@ -25,7 +25,7 @@ WORKDIR /app
 RUN apk --no-cache add ca-certificates wget
 
 # Copy the binary
-COPY --from=builder /app/navplane .
+COPY --from=builder /app/lectr .
 
 # Copy migrations
 COPY --from=builder /app/migrations ./migrations
@@ -34,4 +34,4 @@ COPY --from=builder /app/migrations ./migrations
 EXPOSE 8080
 
 # Run the binary
-ENTRYPOINT ["/app/navplane"]
+ENTRYPOINT ["/app/lectr"]

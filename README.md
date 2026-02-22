@@ -1,11 +1,11 @@
-# NavPlane
+# Lectr
 
-NavPlane is a high-performance AI gateway and control plane for governed LLM traffic.
+Lectr is a high-performance AI gateway and control plane for governed LLM traffic.
 
 ## Project Structure
 
 ```
-navplane/
+lectr/
 ├── backend/          # Go API server
 ├── dashboard/        # React + Vite SPA (Tailwind CSS)
 ├── docker-compose.yml
@@ -115,20 +115,20 @@ docker compose up -d
 # Verify backend started successfully
 docker compose logs backend
 
-# You should see: "NavPlane server starting on :8080 (env: production)"
+# You should see: "Lectr server starting on :8080 (env: production)"
 ```
 
 #### 2. Direct Binary Execution
 
 ```bash
 # Build the binary
-cd backend && go build -o navplane ./cmd/server
+cd backend && go build -o lectr ./cmd/server
 
 # Set environment variables and run
 export ENV=production
 export PROVIDER_BASE_URL="https://api.openai.com/v1"
 export PROVIDER_API_KEY="sk-proj-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-./navplane
+./lectr
 ```
 
 #### 3. Testing Fail-Fast Behavior
@@ -170,14 +170,14 @@ docker compose build
 ```
 
 Images:
-- `navplane-backend` - Scratch-based Go binary (~10MB)
-- `navplane-dashboard` - Nginx serving static assets (~25MB)
+- `lectr-backend` - Scratch-based Go binary (~10MB)
+- `lectr-dashboard` - Nginx serving static assets (~25MB)
 
 ### Without Docker
 
 ```bash
 # Backend
-cd backend && go build -o bin/navplane main.go
+cd backend && go build -o bin/lectr main.go
 
 # Dashboard
 cd dashboard && npm run build

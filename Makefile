@@ -16,7 +16,7 @@ install:
 build: build-backend build-dashboard
 
 build-backend:
-	cd backend && go build -o bin/navplane main.go
+	cd backend && go build -o bin/lectr main.go
 
 build-dashboard:
 	cd dashboard && npm run build

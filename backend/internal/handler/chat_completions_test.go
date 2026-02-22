@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"navplane/internal/config"
+	"lectr/internal/config"
 )
 
 // roundTripperFunc allows using a function as an http.RoundTripper for testing.

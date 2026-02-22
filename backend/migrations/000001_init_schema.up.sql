@@ -1,5 +1,5 @@
 -- Organizations table
--- Each organization has a NavPlane API key for authentication
+-- Each organization has a Lectr API key for authentication
 CREATE TABLE organizations (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name VARCHAR(255) NOT NULL,

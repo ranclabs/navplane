@@ -10,10 +10,10 @@ import (
 	"syscall"
 	"time"
 
-	"navplane/internal/config"
-	"navplane/internal/database"
-	"navplane/internal/handler"
-	"navplane/internal/org"
+	"lectr/internal/config"
+	"lectr/internal/database"
+	"lectr/internal/handler"
+	"lectr/internal/org"
 )
 
 func main() {
@@ -75,7 +75,7 @@ func main() {
 
 	// Start server in a goroutine
 	go func() {
-		log.Printf("NavPlane server starting on :%s (env: %s)", cfg.Port, cfg.Environment)
+		log.Printf("Lectr server starting on :%s (env: %s)", cfg.Port, cfg.Environment)
 		serverErr <- server.ListenAndServe()
 	}()
 
