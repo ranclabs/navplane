@@ -11,15 +11,20 @@ navplane/
 ├── backend/          # Go API server (net/http, no framework)
 │   ├── cmd/server/   # Entry point
 │   ├── internal/
-│   │   ├── auth/       # Authentication helpers
-│   │   ├── config/     # Environment-based configuration
-│   │   ├── database/   # PostgreSQL connection and migrations
-│   │   ├── handler/    # HTTP handlers
-│   │   ├── middleware/ # HTTP middleware (auth, logging, etc.)
-│   │   ├── openai/     # OpenAI-compatible types
-│   │   └── org/        # Organization domain (manager/datastore pattern)
-│   └── migrations/   # SQL migration files
-├── dashboard/        # React + Vite SPA
+│   │   ├── auth/         # Authentication helpers (API key validation)
+│   │   ├── config/       # Environment-based configuration
+│   │   ├── database/     # PostgreSQL connection and migrations
+│   │   ├── handler/      # HTTP handlers
+│   │   ├── jwtauth/      # Auth0 JWT verification (JWKS, claims)
+│   │   ├── middleware/   # HTTP middleware (auth, logging, etc.)
+│   │   ├── openai/       # OpenAI-compatible types
+│   │   ├── org/          # Organization domain (manager/datastore pattern)
+│   │   ├── orgsettings/  # Per-org provider settings (model restrictions)
+│   │   ├── provider/     # Provider interface + implementations (OpenAI, Anthropic)
+│   │   ├── providerkey/  # BYOK encrypted key storage (envelope encryption)
+│   │   └── user/         # User identities + org membership
+│   └── migrations/     # SQL migration files
+├── dashboard/          # React + Vite SPA
 └── docker-compose.yml
 ```
 
@@ -563,6 +568,90 @@ func (h *AdminOrgsHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
+## Package Reference
+
+### `jwtauth` - Auth0 JWT Verification
+
+Handles JWT verification for dashboard/user authentication:
+
+```go
+verifier, _ := jwtauth.NewVerifier(jwtauth.Config{
+    Domain:   "your-tenant.auth0.com",
+    Audience: "https://api.navplane.io",
+})
+
+// In middleware
+claims, err := verifier.Verify(ctx, tokenString)
+auth0UserID := claims.Auth0UserID()  // "auth0|123456"
+```
+
+### `user` - User Identities & Org Membership
+
+Manages user identities synced from Auth0 and org memberships:
+
+```go
+// Upsert user from JWT claims on login
+identity, _ := userManager.UpsertFromClaims(ctx, claims)
+
+// Check org access (admins can access any org)
+canAccess, _ := userManager.CanAccessOrg(ctx, userID, orgID)
+
+// Manage memberships
+userManager.AddToOrg(ctx, orgID, userID, user.RoleMember)
+```
+
+### `provider` - Provider Registry
+
+Defines the `Provider` interface and implementations:
+
+```go
+registry := provider.NewRegistry()  // Auto-registers OpenAI, Anthropic
+
+p, _ := registry.Get("openai")
+models := p.Models()
+err := p.ValidateKey(ctx, "sk-...")  // Tests key with provider API
+```
+
+### `providerkey` - Encrypted Key Storage
+
+BYOK storage with envelope encryption:
+
+```go
+encryptor, _ := providerkey.NewEncryptor(kek)  // 32-byte KEK
+manager := providerkey.NewManager(ds, encryptor, registry)
+
+// Store key (validates with provider, then encrypts)
+manager.Create(ctx, providerkey.CreateInput{
+    OrgID:       orgID,
+    Provider:    "openai",
+    KeyAlias:    "Production Key",
+    APIKey:      "sk-...",
+    ValidateKey: true,
+})
+
+// Get decrypted key for requests (only in memory)
+apiKey, _ := manager.GetDecryptedKey(ctx, orgID, "openai")
+```
+
+### `orgsettings` - Provider/Model Restrictions
+
+Per-org provider settings (enable/disable, model allowlists/blocklists):
+
+```go
+manager := orgsettings.NewManager(ds, registry)
+
+// Check if org can use a model
+err := manager.CheckAccess(ctx, orgID, "openai", "gpt-4")
+
+// Configure restrictions
+manager.Update(ctx, orgsettings.UpdateInput{
+    OrgID:         orgID,
+    Provider:      "openai",
+    Enabled:       &true,
+    BlockedModels: []string{"gpt-4-32k"},  // Block expensive models
+})
+```
+
 ## Key Design Decisions
 
 1. **Passthrough Proxy**: Requests forwarded as-is to preserve provider compatibility
@@ -573,3 +662,6 @@ func (h *AdminOrgsHandler) Get(w http.ResponseWriter, r *http.Request) {
 6. **Manager/Datastore Separation**: Clean separation of persistence and business logic
 7. **Hashed API Keys**: Never store plaintext keys, always SHA-256 hash
 8. **Instant Kill Switch**: Org disable takes effect immediately, no caching
+9. **Auth0 Delegation**: User passwords/MFA managed by Auth0, NavPlane only verifies JWTs
+10. **Envelope Encryption**: Provider keys encrypted with per-key DEK, master KEK rotation without re-encrypting all keys
+11. **Provider Interface**: Common interface for all AI providers, easy to add new providers

@@ -14,6 +14,8 @@ import (
 	"navplane/internal/database"
 	"navplane/internal/handler"
 	"navplane/internal/org"
+	"navplane/internal/provider"
+	"navplane/internal/providerkey"
 )
 
 func main() {
@@ -52,10 +54,25 @@ func main() {
 	orgDatastore := org.NewDatastore(db.DB)
 	orgManager := org.NewManager(orgDatastore)
 
+	// Initialize provider registry
+	providerRegistry := provider.NewRegistry()
+	log.Printf("registered providers: %v", providerRegistry.Names())
+
+	// Initialize encryption and provider key manager
+	encryptor, err := providerkey.NewEncryptor(cfg.Encryption.Key)
+	if err != nil {
+		log.Fatalf("failed to initialize encryptor: %v", err)
+	}
+
+	providerKeyDatastore := providerkey.NewDatastore(db.DB)
+	providerKeyManager := providerkey.NewManager(providerKeyDatastore, encryptor, providerRegistry)
+
 	// Set up routes with dependencies
 	deps := &handler.Deps{
-		Config:     cfg,
-		OrgManager: orgManager,
+		Config:             cfg,
+		OrgManager:         orgManager,
+		ProviderRegistry:   providerRegistry,
+		ProviderKeyManager: providerKeyManager,
 	}
 
 	mux := http.NewServeMux()

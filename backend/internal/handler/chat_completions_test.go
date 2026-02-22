@@ -11,7 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"navplane/internal/config"
+	"navplane/internal/middleware"
+	"navplane/internal/org"
+	"navplane/internal/provider"
+	"navplane/internal/providerkey"
+
+	"github.com/google/uuid"
 )
 
 // roundTripperFunc allows using a function as an http.RoundTripper for testing.
@@ -21,32 +26,91 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-func testConfig() *config.Config {
-	return &config.Config{
-		Port:        "8080",
-		Environment: "development",
-		Provider: config.ProviderConfig{
-			BaseURL: "https://api.openai.com",
-			APIKey:  "sk-test-key-for-testing-only",
+// mockProviderKeyManager is a simple mock for testing.
+type mockProviderKeyManager struct {
+	keys map[string]string // provider -> decrypted key
+}
+
+func (m *mockProviderKeyManager) GetDecryptedKey(ctx context.Context, orgID uuid.UUID, providerName string) (string, error) {
+	if key, ok := m.keys[providerName]; ok {
+		return key, nil
+	}
+	return "", providerkey.ErrNotFound
+}
+
+func (m *mockProviderKeyManager) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*providerkey.ProviderKey, error) {
+	return nil, nil
+}
+
+func (m *mockProviderKeyManager) Create(ctx context.Context, input providerkey.CreateInput) (*providerkey.ProviderKey, error) {
+	return nil, nil
+}
+
+func (m *mockProviderKeyManager) Delete(ctx context.Context, id uuid.UUID) error {
+	return nil
+}
+
+func testDeps() *ChatCompletionsDeps {
+	return &ChatCompletionsDeps{
+		ProviderRegistry: provider.NewRegistry(),
+		ProviderKeyManager: &mockProviderKeyManagerWrapper{
+			keys: map[string]string{
+				"openai":    "sk-test-key-for-testing-only",
+				"anthropic": "sk-ant-test-key",
+			},
 		},
 	}
+}
+
+// mockProviderKeyManagerWrapper wraps mockProviderKeyManager to implement the interface.
+type mockProviderKeyManagerWrapper struct {
+	keys map[string]string
+}
+
+func (m *mockProviderKeyManagerWrapper) GetDecryptedKey(ctx context.Context, orgID uuid.UUID, providerName string) (string, error) {
+	if key, ok := m.keys[providerName]; ok {
+		return key, nil
+	}
+	return "", providerkey.ErrNotFound
 }
 
 func mockHTTPClient(handler func(req *http.Request) (*http.Response, error)) *http.Client {
 	return &http.Client{Transport: roundTripperFunc(handler)}
 }
 
+// withOrgContext adds a mock org to the request context.
+func withOrgContext(req *http.Request) *http.Request {
+	testOrg := &org.Org{
+		ID:      uuid.New(),
+		Name:    "Test Org",
+		Enabled: true,
+	}
+	ctx := context.WithValue(req.Context(), middleware.OrgContextKey, testOrg)
+	return req.WithContext(ctx)
+}
+
+// newTestHandler creates a handler for testing with mocked dependencies.
+func newTestHandler(client *http.Client, keys map[string]string) http.HandlerFunc {
+	deps := &ChatCompletionsDeps{
+		ProviderRegistry: provider.NewRegistry(),
+		ProviderKeyManager: &mockProviderKeyManagerWrapper{
+			keys: keys,
+		},
+	}
+	return newChatHandler(deps, client).ServeHTTP
+}
+
 // --- Method Not Allowed Tests ---
 
 func TestChatCompletions_MethodNotAllowed_GET(t *testing.T) {
-	cfg := testConfig()
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("upstream should not be called for GET request")
 		return nil, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "test-key"})
 	req := httptest.NewRequest(http.MethodGet, "/v1/chat/completions", nil)
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -60,8 +124,6 @@ func TestChatCompletions_MethodNotAllowed_GET(t *testing.T) {
 // --- Non-Streaming Passthrough Tests ---
 
 func TestChatCompletions_PassthroughSuccess(t *testing.T) {
-	cfg := testConfig()
-
 	upstreamResponse := map[string]any{
 		"id":      "chatcmpl-123",
 		"object":  "chat.completion",
@@ -81,16 +143,17 @@ func TestChatCompletions_PassthroughSuccess(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello!"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Errorf("expected status 200, got %d", rec.Code)
+		t.Errorf("expected status 200, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var resp map[string]any
@@ -103,8 +166,6 @@ func TestChatCompletions_PassthroughSuccess(t *testing.T) {
 }
 
 func TestChatCompletions_PassthroughUpstreamError(t *testing.T) {
-	cfg := testConfig()
-
 	upstreamError := map[string]any{
 		"error": map[string]any{
 			"message": "The model `gpt-5` does not exist",
@@ -122,23 +183,21 @@ func TestChatCompletions_PassthroughUpstreamError(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
-	body := `{"model": "gpt-5", "messages": [{"role": "user", "content": "Hello!"}]}`
+	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello!"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
 
-	// Upstream error passed through
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("expected status 404, got %d", rec.Code)
 	}
 }
 
 func TestChatCompletions_ClientAuthNeverForwarded(t *testing.T) {
-	cfg := testConfig()
-
 	var capturedAuthHeader string
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		capturedAuthHeader = req.Header.Get("Authorization")
@@ -149,24 +208,45 @@ func TestChatCompletions_ClientAuthNeverForwarded(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	expectedKey := "sk-test-key-for-org"
+	handler := newTestHandler(client, map[string]string{"openai": expectedKey})
 
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer client-secret-token-should-not-forward")
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
 
-	expectedAuth := "Bearer " + cfg.Provider.APIKey
+	expectedAuth := "Bearer " + expectedKey
 	if capturedAuthHeader != expectedAuth {
 		t.Errorf("expected upstream to receive '%s', got '%s'", expectedAuth, capturedAuthHeader)
 	}
 }
 
-func TestChatCompletions_RequestBodyPassthrough(t *testing.T) {
-	cfg := testConfig()
+func TestChatCompletions_NoProviderKey(t *testing.T) {
+	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
+		t.Fatal("upstream should not be called when no provider key")
+		return nil, nil
+	})
 
+	// No keys configured
+	handler := newTestHandler(client, map[string]string{})
+
+	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
+	rec := httptest.NewRecorder()
+
+	handler(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChatCompletions_RequestBodyPassthrough(t *testing.T) {
 	var capturedBody []byte
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		capturedBody, _ = io.ReadAll(req.Body)
@@ -177,10 +257,11 @@ func TestChatCompletions_RequestBodyPassthrough(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	originalBody := `{"model":"gpt-4","messages":[{"role":"user","content":"Hello"}],"custom_field":"passthrough"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(originalBody))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -192,31 +273,7 @@ func TestChatCompletions_RequestBodyPassthrough(t *testing.T) {
 
 // --- Streaming Tests ---
 
-func TestChatCompletions_IsStreamingRequest(t *testing.T) {
-	tests := []struct {
-		name     string
-		body     string
-		expected bool
-	}{
-		{"stream true", `{"stream": true}`, true},
-		{"stream false", `{"stream": false}`, false},
-		{"stream missing", `{"model": "gpt-4"}`, false},
-		{"invalid json", `{invalid}`, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isStreamingRequest([]byte(tt.body))
-			if result != tt.expected {
-				t.Errorf("isStreamingRequest(%q) = %v, want %v", tt.body, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestChatCompletions_StreamingResponse(t *testing.T) {
-	cfg := testConfig()
-
 	streamingResponse := "data: {\"id\":\"chatcmpl-123\"}\n\ndata: [DONE]\n\n"
 
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
@@ -227,10 +284,11 @@ func TestChatCompletions_StreamingResponse(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}], "stream": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -249,8 +307,6 @@ func TestChatCompletions_StreamingResponse(t *testing.T) {
 }
 
 func TestChatCompletions_StreamingUpstreamError(t *testing.T) {
-	cfg := testConfig()
-
 	upstreamError := map[string]any{
 		"error": map[string]any{"message": "Rate limit exceeded", "type": "rate_limit_error"},
 	}
@@ -264,20 +320,19 @@ func TestChatCompletions_StreamingUpstreamError(t *testing.T) {
 		}, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}], "stream": true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
 
-	// Non-200 upstream error passed through (not as SSE)
 	if rec.Code != http.StatusTooManyRequests {
 		t.Errorf("expected status 429, got %d", rec.Code)
 	}
 
-	// Should NOT be SSE content type for errors
 	if ct := rec.Header().Get("Content-Type"); ct == "text/event-stream" {
 		t.Error("error response should not use text/event-stream")
 	}
@@ -286,16 +341,16 @@ func TestChatCompletions_StreamingUpstreamError(t *testing.T) {
 // --- Error Handling Tests ---
 
 func TestChatCompletions_RequestBodyTooLarge(t *testing.T) {
-	cfg := testConfig()
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		t.Fatal("upstream should not be called for oversized request")
 		return nil, nil
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
-	largeBody := strings.Repeat("x", 11*1024*1024)
+	largeBody := `{"model":"gpt-4","messages":[{"role":"user","content":"` + strings.Repeat("x", 11*1024*1024) + `"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(largeBody))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -307,16 +362,15 @@ func TestChatCompletions_RequestBodyTooLarge(t *testing.T) {
 }
 
 func TestChatCompletions_UpstreamUnreachable(t *testing.T) {
-	cfg := testConfig()
-
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		return nil, &mockNetworkError{message: "connection refused"}
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hello"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	handler(rec, req)
@@ -330,8 +384,6 @@ func TestChatCompletions_UpstreamUnreachable(t *testing.T) {
 // --- Client Disconnection Tests ---
 
 func TestChatCompletions_StreamingClientDisconnect(t *testing.T) {
-	cfg := testConfig()
-
 	upstreamCancelled := make(chan struct{})
 	client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
 		<-req.Context().Done()
@@ -339,12 +391,13 @@ func TestChatCompletions_StreamingClientDisconnect(t *testing.T) {
 		return nil, req.Context().Err()
 	})
 
-	handler := NewChatCompletionsHandlerWithClient(cfg, client)
+	handler := newTestHandler(client, map[string]string{"openai": "sk-test-key"})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	body := `{"stream": true, "model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
 	req = req.WithContext(ctx)
+	req = withOrgContext(req)
 	rec := httptest.NewRecorder()
 
 	go func() {
@@ -362,24 +415,28 @@ func TestChatCompletions_StreamingClientDisconnect(t *testing.T) {
 	}
 }
 
-// --- URL Normalization Tests ---
+// --- Provider Routing Tests ---
 
-func TestChatCompletions_URLNormalization(t *testing.T) {
+func TestChatCompletions_RoutesToCorrectProvider(t *testing.T) {
 	tests := []struct {
-		name        string
-		baseURL     string
-		expectedURL string
+		model            string
+		expectedProvider string
+		expectedAuthKey  string
 	}{
-		{"no trailing slash", "https://api.openai.com", "https://api.openai.com/v1/chat/completions"},
-		{"trailing slash", "https://api.openai.com/", "https://api.openai.com/v1/chat/completions"},
-		{"includes v1", "https://api.openai.com/v1", "https://api.openai.com/v1/chat/completions"},
-		{"includes v1 with slash", "https://api.openai.com/v1/", "https://api.openai.com/v1/chat/completions"},
+		{"gpt-4", "openai", "Bearer sk-openai-key"},
+		{"gpt-4o", "openai", "Bearer sk-openai-key"},
+		{"claude-3-5-sonnet-20241022", "anthropic", "sk-anthropic-key"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		t.Run(tt.model, func(t *testing.T) {
+			var capturedAuthHeader string
 			var capturedURL string
 			client := mockHTTPClient(func(req *http.Request) (*http.Response, error) {
+				capturedAuthHeader = req.Header.Get("Authorization")
+				if capturedAuthHeader == "" {
+					capturedAuthHeader = req.Header.Get("x-api-key")
+				}
 				capturedURL = req.URL.String()
 				return &http.Response{
 					StatusCode: http.StatusOK,
@@ -388,22 +445,27 @@ func TestChatCompletions_URLNormalization(t *testing.T) {
 				}, nil
 			})
 
-			cfg := &config.Config{
-				Provider: config.ProviderConfig{
-					BaseURL: tt.baseURL,
-					APIKey:  "test-key",
-				},
-			}
+			handler := newTestHandler(client, map[string]string{
+				"openai":    "sk-openai-key",
+				"anthropic": "sk-anthropic-key",
+			})
 
-			handler := NewChatCompletionsHandlerWithClient(cfg, client)
-			body := `{"model": "gpt-4", "messages": [{"role": "user", "content": "Hi"}]}`
+			body := `{"model": "` + tt.model + `", "messages": [{"role": "user", "content": "Hi"}]}`
 			req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewBufferString(body))
+			req = withOrgContext(req)
 			rec := httptest.NewRecorder()
 
 			handler(rec, req)
 
-			if capturedURL != tt.expectedURL {
-				t.Errorf("expected URL %s, got %s", tt.expectedURL, capturedURL)
+			if capturedAuthHeader != tt.expectedAuthKey {
+				t.Errorf("expected auth '%s', got '%s'", tt.expectedAuthKey, capturedAuthHeader)
+			}
+
+			if tt.expectedProvider == "openai" && !strings.Contains(capturedURL, "api.openai.com") {
+				t.Errorf("expected OpenAI URL, got %s", capturedURL)
+			}
+			if tt.expectedProvider == "anthropic" && !strings.Contains(capturedURL, "api.anthropic.com") {
+				t.Errorf("expected Anthropic URL, got %s", capturedURL)
 			}
 		})
 	}
@@ -424,7 +486,7 @@ func assertJSONError(t *testing.T, body []byte, expectedMessage, expectedType st
 
 	var resp map[string]any
 	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("failed to parse error response: %v", err)
+		t.Fatalf("failed to parse error response: %v, body: %s", err, string(body))
 	}
 
 	errObj, ok := resp["error"].(map[string]any)

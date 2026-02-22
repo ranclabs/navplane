@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -8,12 +9,16 @@ import (
 	"strings"
 )
 
-// ProviderConfig holds the configuration for the upstream AI provider.
-// This is temporary MVP configuration using environment variables.
-// Future: will be replaced by BYOK vault or per-org provider keys.
-type ProviderConfig struct {
-	BaseURL string
-	APIKey  string
+// Auth0Config holds Auth0 JWT verification configuration.
+type Auth0Config struct {
+	Domain   string // e.g., "your-tenant.auth0.com"
+	Audience string // e.g., "https://api.navplane.io"
+}
+
+// EncryptionConfig holds encryption key configuration for BYOK.
+type EncryptionConfig struct {
+	Key    []byte // 32-byte key for AES-256-GCM
+	KeyNew []byte // Optional: new key for rotation
 }
 
 // DatabaseConfig holds PostgreSQL connection configuration.
@@ -27,8 +32,9 @@ type DatabaseConfig struct {
 type Config struct {
 	Port        string
 	Environment string
-	Provider    ProviderConfig
 	Database    DatabaseConfig
+	Auth0       Auth0Config
+	Encryption  EncryptionConfig
 }
 
 // Load reads configuration from environment variables.
@@ -38,48 +44,43 @@ func Load() (*Config, error) {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8080" // sensible default
+		port = "8080"
 	}
 
 	env := os.Getenv("ENV")
 	if env == "" {
-		env = "development" // sensible default
+		env = "development"
 	}
 
-	// Validate environment value
 	if env != "development" && env != "staging" && env != "production" {
 		return nil, fmt.Errorf("invalid ENV value %q: must be development, staging, or production", env)
 	}
 
-	// Load provider configuration (required for MVP)
-	providerBaseURL := os.Getenv("PROVIDER_BASE_URL")
-	if providerBaseURL == "" {
-		missing = append(missing, "PROVIDER_BASE_URL")
-	}
-
-	providerAPIKey := os.Getenv("PROVIDER_API_KEY")
-	if providerAPIKey == "" {
-		missing = append(missing, "PROVIDER_API_KEY")
-	}
-
-	// Load database configuration (required)
+	// Database configuration (required)
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		missing = append(missing, "DATABASE_URL")
 	}
 
+	// Auth0 configuration (required)
+	auth0Domain := os.Getenv("AUTH0_DOMAIN")
+	if auth0Domain == "" {
+		missing = append(missing, "AUTH0_DOMAIN")
+	}
+
+	auth0Audience := os.Getenv("AUTH0_AUDIENCE")
+	if auth0Audience == "" {
+		missing = append(missing, "AUTH0_AUDIENCE")
+	}
+
+	// Encryption key (required)
+	encryptionKeyB64 := os.Getenv("ENCRYPTION_KEY")
+	if encryptionKeyB64 == "" {
+		missing = append(missing, "ENCRYPTION_KEY")
+	}
+
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables: %v", missing)
-	}
-
-	// Validate provider base URL format
-	if err := validateBaseURL(providerBaseURL); err != nil {
-		return nil, fmt.Errorf("invalid PROVIDER_BASE_URL: %w", err)
-	}
-
-	// Validate provider API key format
-	if err := validateAPIKey(providerAPIKey); err != nil {
-		return nil, fmt.Errorf("invalid PROVIDER_API_KEY: %w", err)
 	}
 
 	// Validate database URL format
@@ -87,65 +88,75 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid DATABASE_URL: %w", err)
 	}
 
-	// Load optional database pool settings
+	// Validate and decode encryption key
+	encryptionKey, err := decodeEncryptionKey(encryptionKeyB64)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ENCRYPTION_KEY: %w", err)
+	}
+
+	// Optional: new encryption key for rotation
+	var encryptionKeyNew []byte
+	if keyNewB64 := os.Getenv("ENCRYPTION_KEY_NEW"); keyNewB64 != "" {
+		encryptionKeyNew, err = decodeEncryptionKey(keyNewB64)
+		if err != nil {
+			return nil, fmt.Errorf("invalid ENCRYPTION_KEY_NEW: %w", err)
+		}
+	}
+
+	// Validate Auth0 domain format
+	if err := validateAuth0Domain(auth0Domain); err != nil {
+		return nil, fmt.Errorf("invalid AUTH0_DOMAIN: %w", err)
+	}
+
 	dbConfig := DatabaseConfig{
 		URL:             databaseURL,
 		MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
 		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
-		ConnMaxLifetime: getEnvInt("DB_CONN_MAX_LIFETIME", 300), // 5 minutes default
+		ConnMaxLifetime: getEnvInt("DB_CONN_MAX_LIFETIME", 300),
 	}
 
 	return &Config{
 		Port:        port,
 		Environment: env,
-		Provider: ProviderConfig{
-			BaseURL: providerBaseURL,
-			APIKey:  providerAPIKey,
+		Database:    dbConfig,
+		Auth0: Auth0Config{
+			Domain:   auth0Domain,
+			Audience: auth0Audience,
 		},
-		Database: dbConfig,
+		Encryption: EncryptionConfig{
+			Key:    encryptionKey,
+			KeyNew: encryptionKeyNew,
+		},
 	}, nil
 }
 
-// validateBaseURL ensures the provider base URL is a valid HTTP/HTTPS URL.
-func validateBaseURL(baseURL string) error {
-	parsed, err := url.Parse(baseURL)
+// decodeEncryptionKey decodes and validates a base64-encoded 32-byte key.
+func decodeEncryptionKey(b64Key string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(b64Key))
 	if err != nil {
-		return fmt.Errorf("malformed URL: %w", err)
+		return nil, fmt.Errorf("must be valid base64: %w", err)
 	}
-
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("URL must use http or https scheme, got %q", parsed.Scheme)
+	if len(key) != 32 {
+		return nil, fmt.Errorf("must be exactly 32 bytes (256 bits), got %d bytes", len(key))
 	}
-
-	if parsed.Host == "" {
-		return fmt.Errorf("URL must include a host")
-	}
-
-	return nil
+	return key, nil
 }
 
-// validateAPIKey performs basic sanity checks on the API key format.
-// This helps catch obvious configuration mistakes early.
-func validateAPIKey(apiKey string) error {
-	// Remove whitespace that might have been accidentally included
-	trimmed := strings.TrimSpace(apiKey)
-
-	if trimmed != apiKey {
-		return fmt.Errorf("API key contains leading or trailing whitespace")
+// validateAuth0Domain ensures the Auth0 domain is properly formatted.
+func validateAuth0Domain(domain string) error {
+	domain = strings.TrimSpace(domain)
+	if domain == "" {
+		return fmt.Errorf("domain cannot be empty")
 	}
 
-	// Basic length check - most API keys are at least 20 characters
-	if len(apiKey) < 20 {
-		return fmt.Errorf("API key appears invalid (too short, must be at least 20 characters)")
+	// Should not include protocol
+	if strings.HasPrefix(domain, "http://") || strings.HasPrefix(domain, "https://") {
+		return fmt.Errorf("domain should not include protocol (http:// or https://)")
 	}
 
-	// Check for common placeholder values
-	lower := strings.ToLower(apiKey)
-	placeholders := []string{"your-api-key", "sk-your-", "replace-me", "changeme", "example"}
-	for _, placeholder := range placeholders {
-		if strings.Contains(lower, placeholder) {
-			return fmt.Errorf("API key appears to be a placeholder value")
-		}
+	// Should look like a domain
+	if !strings.Contains(domain, ".") {
+		return fmt.Errorf("domain must be a valid hostname (e.g., your-tenant.auth0.com)")
 	}
 
 	return nil

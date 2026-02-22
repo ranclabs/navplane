@@ -10,7 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"navplane/internal/config"
+	"navplane/internal/middleware"
+	"navplane/internal/provider"
+	"navplane/internal/providerkey"
+
+	"github.com/google/uuid"
 )
 
 const (
@@ -24,22 +28,33 @@ func closeBody(body io.Closer) {
 	}
 }
 
+// ProviderKeyGetter is the interface for getting decrypted provider keys.
+type ProviderKeyGetter interface {
+	GetDecryptedKey(ctx context.Context, orgID uuid.UUID, providerName string) (string, error)
+}
+
+// ChatCompletionsDeps holds dependencies for the chat completions handler.
+type ChatCompletionsDeps struct {
+	ProviderRegistry   *provider.Registry
+	ProviderKeyManager ProviderKeyGetter
+}
+
 // chatCompletionsHandler handles POST /v1/chat/completions as a passthrough proxy.
 //
 // Design goals:
 //  1. Full transparency: Upstream responses (including errors) returned as-is
 //  2. No request validation: Upstream provider validates the request
-//  3. Minimal parsing: Only check stream flag for routing
+//  3. Minimal parsing: Only check stream flag and model for routing
 //  4. SSE streaming: Stream responses with continuous flushing when stream=true
 //
 // NavPlane errors only for: 405, 400 (read fail), 413, 502, 504
 type chatCompletionsHandler struct {
-	upstreamURL string
-	apiKey      string
-	client      *http.Client
+	providerRegistry   *provider.Registry
+	providerKeyManager ProviderKeyGetter
+	client             *http.Client
 }
 
-func newHandler(cfg *config.Config, client *http.Client) *chatCompletionsHandler {
+func newChatHandler(deps *ChatCompletionsDeps, client *http.Client) *chatCompletionsHandler {
 	if client == nil {
 		client = &http.Client{
 			Timeout: 0, // Per-request timeout via context
@@ -48,21 +63,32 @@ func newHandler(cfg *config.Config, client *http.Client) *chatCompletionsHandler
 			},
 		}
 	}
-	// Normalize base URL: strip trailing slash and /v1 suffix to avoid duplication
-	baseURL := strings.TrimSuffix(cfg.Provider.BaseURL, "/")
-	baseURL = strings.TrimSuffix(baseURL, "/v1")
 
 	return &chatCompletionsHandler{
-		upstreamURL: baseURL + "/v1/chat/completions",
-		apiKey:      cfg.Provider.APIKey,
-		client:      client,
+		providerRegistry:   deps.ProviderRegistry,
+		providerKeyManager: deps.ProviderKeyManager,
+		client:             client,
 	}
+}
+
+// requestInfo holds parsed request metadata.
+type requestInfo struct {
+	Model        string
+	ProviderName string
+	IsStreaming  bool
 }
 
 func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Defense-in-depth: mux routes by method, but check here for direct handler use
 	if r.Method != http.MethodPost {
 		writeProxyError(w, http.StatusMethodNotAllowed, "method not allowed", "invalid_request_error")
+		return
+	}
+
+	// Get org from context (set by auth middleware)
+	org := middleware.GetOrg(r.Context())
+	if org == nil {
+		writeProxyError(w, http.StatusUnauthorized, "unauthorized", "authentication_error")
 		return
 	}
 
@@ -78,27 +104,106 @@ func (h *chatCompletionsHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if isStreamingRequest(body) {
-		h.handleStreaming(w, r, body)
+	// Parse request to determine provider and streaming mode
+	reqInfo, err := h.parseRequest(body)
+	if err != nil {
+		writeProxyError(w, http.StatusBadRequest, err.Error(), "invalid_request_error")
+		return
+	}
+
+	// Get provider
+	p, err := h.providerRegistry.Get(reqInfo.ProviderName)
+	if err != nil {
+		writeProxyError(w, http.StatusBadRequest, "unsupported provider for model: "+reqInfo.Model, "invalid_request_error")
+		return
+	}
+
+	// Get decrypted provider key for this org
+	apiKey, err := h.providerKeyManager.GetDecryptedKey(r.Context(), org.ID, reqInfo.ProviderName)
+	if err != nil {
+		if err == providerkey.ErrNotFound {
+			writeProxyError(w, http.StatusBadRequest, "no API key configured for provider: "+p.DisplayName(), "invalid_request_error")
+			return
+		}
+		log.Printf("failed to get provider key: %v", err)
+		writeProxyError(w, http.StatusInternalServerError, "failed to retrieve provider credentials", "server_error")
+		return
+	}
+
+	// Build upstream URL
+	upstreamURL := strings.TrimSuffix(p.BaseURL(), "/") + "/chat/completions"
+
+	if reqInfo.IsStreaming {
+		h.handleStreaming(w, r, body, upstreamURL, p, apiKey)
 	} else {
-		h.handleNonStreaming(w, r, body)
+		h.handleNonStreaming(w, r, body, upstreamURL, p, apiKey)
 	}
 }
 
-func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
+// parseRequest extracts model and streaming info from the request body.
+func (h *chatCompletionsHandler) parseRequest(body []byte) (*requestInfo, error) {
+	var partial struct {
+		Model  string `json:"model"`
+		Stream *bool  `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &partial); err != nil {
+		return nil, err
+	}
+
+	if partial.Model == "" {
+		return nil, &jsonError{Message: "model is required"}
+	}
+
+	// Determine provider from model
+	providerName := h.determineProvider(partial.Model)
+
+	return &requestInfo{
+		Model:        partial.Model,
+		ProviderName: providerName,
+		IsStreaming:  partial.Stream != nil && *partial.Stream,
+	}, nil
+}
+
+// determineProvider determines the provider from the model name.
+func (h *chatCompletionsHandler) determineProvider(model string) string {
+	model = strings.ToLower(model)
+
+	// OpenAI models
+	if strings.HasPrefix(model, "gpt-") || strings.HasPrefix(model, "o1") {
+		return "openai"
+	}
+
+	// Anthropic models
+	if strings.HasPrefix(model, "claude-") {
+		return "anthropic"
+	}
+
+	// Default to OpenAI for unknown models
+	return "openai"
+}
+
+type jsonError struct {
+	Message string
+}
+
+func (e *jsonError) Error() string {
+	return e.Message
+}
+
+func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *http.Request, body []byte, upstreamURL string, p provider.Provider, apiKey string) {
 	start := time.Now()
 	reqID := r.Header.Get("X-Request-ID")
 
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout)
 	defer cancel()
 
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.upstreamURL, bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		writeProxyError(w, http.StatusInternalServerError, "failed to create upstream request", "server_error")
 		return
 	}
 
-	setUpstreamHeaders(upstreamReq, r, h.apiKey)
+	setUpstreamHeaders(upstreamReq, r, p, apiKey)
 
 	upstreamResp, err := h.client.Do(upstreamReq)
 	if err != nil {
@@ -125,7 +230,7 @@ func (h *chatCompletionsHandler) handleNonStreaming(w http.ResponseWriter, r *ht
 	logRequest(r.URL.Path, upstreamResp.StatusCode, time.Since(start), reqID)
 }
 
-func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte) {
+func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.Request, body []byte, upstreamURL string, p provider.Provider, apiKey string) {
 	start := time.Now()
 	reqID := r.Header.Get("X-Request-ID")
 
@@ -133,13 +238,13 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
-	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, h.upstreamURL, bytes.NewReader(body))
+	upstreamReq, err := http.NewRequestWithContext(ctx, http.MethodPost, upstreamURL, bytes.NewReader(body))
 	if err != nil {
 		writeProxyError(w, http.StatusInternalServerError, "failed to create upstream request", "server_error")
 		return
 	}
 
-	setUpstreamHeaders(upstreamReq, r, h.apiKey)
+	setUpstreamHeaders(upstreamReq, r, p, apiKey)
 	upstreamReq.Header.Set("Accept", "text/event-stream")
 
 	upstreamResp, err := h.client.Do(upstreamReq)
@@ -188,8 +293,6 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 	flusher.Flush()
 
 	// Stream response body
-	// Note: Context cancellation closes the HTTP connection, causing Read to return an error.
-	// No explicit select needed - the transport layer handles cancellation.
 	buf := make([]byte, 4096)
 	for {
 		n, err := upstreamResp.Body.Read(buf)
@@ -207,21 +310,17 @@ func (h *chatCompletionsHandler) handleStreaming(w http.ResponseWriter, r *http.
 	logRequest(r.URL.Path, http.StatusOK, time.Since(start), reqID)
 }
 
-func isStreamingRequest(body []byte) bool {
-	var partial struct {
-		Stream *bool `json:"stream"`
-	}
-	if err := json.Unmarshal(body, &partial); err != nil {
-		return false
-	}
-	return partial.Stream != nil && *partial.Stream
-}
-
-func setUpstreamHeaders(upstream *http.Request, original *http.Request, apiKey string) {
+func setUpstreamHeaders(upstream *http.Request, original *http.Request, p provider.Provider, apiKey string) {
 	upstream.Header.Set("Content-Type", "application/json")
 	upstream.Header.Set("User-Agent", "NavPlane/1.0")
-	// SECURITY: Always use provider key, never forward client auth
-	upstream.Header.Set("Authorization", "Bearer "+apiKey)
+
+	// Set provider-specific auth header
+	upstream.Header.Set(p.AuthHeader(), p.FormatAuthValue(apiKey))
+
+	// Anthropic requires version header
+	if p.Name() == "anthropic" {
+		upstream.Header.Set("anthropic-version", "2023-06-01")
+	}
 
 	if v := original.Header.Get("Accept"); v != "" {
 		upstream.Header.Set("Accept", v)
@@ -287,11 +386,11 @@ func logRequest(path string, status int, duration time.Duration, reqID string) {
 }
 
 // NewChatCompletionsHandler creates a handler for production use.
-func NewChatCompletionsHandler(cfg *config.Config) http.HandlerFunc {
-	return newHandler(cfg, nil).ServeHTTP
+func NewChatCompletionsHandler(deps *ChatCompletionsDeps) http.HandlerFunc {
+	return newChatHandler(deps, nil).ServeHTTP
 }
 
 // NewChatCompletionsHandlerWithClient creates a handler with custom HTTP client (for testing).
-func NewChatCompletionsHandlerWithClient(cfg *config.Config, client *http.Client) http.HandlerFunc {
-	return newHandler(cfg, client).ServeHTTP
+func NewChatCompletionsHandlerWithClient(deps *ChatCompletionsDeps, client *http.Client) http.HandlerFunc {
+	return newChatHandler(deps, client).ServeHTTP
 }
