@@ -21,7 +21,7 @@ NavPlane is a passthrough proxy for AI providers that tracks usage and enables p
 - [x] Remove exposed PostgreSQL port for security
 
 #### Task 2: Org Model & Basic Auth ✅
-**Branch:** `ronald/02-org-model` (in review)
+**Branch:** `ronald/02-org-model` (merged)
 
 - [x] Create org package with manager/datastore pattern
 - [x] Implement `Org` model (ID, Name, APIKeyHash, Enabled, timestamps)
@@ -32,6 +32,18 @@ NavPlane is a passthrough proxy for AI providers that tracks usage and enables p
 - [x] Add comprehensive tests with sqlmock
 - [x] Update AGENTS.md with manager/datastore guidelines
 
+#### Task 3: Org-Level Kill Switch & Admin API ✅
+**Branch:** `ronald/02-org-model` (in review)
+
+- [x] Add `enabled` flag check in auth middleware
+- [x] Admin endpoint to toggle org status (`PUT /admin/orgs/{id}/enabled`)
+- [x] Disabled org requests fail immediately with 403
+- [x] No provider calls made for disabled orgs
+- [x] Re-enabling restores traffic instantly
+- [x] Full CRUD endpoints for orgs (`GET/POST /admin/orgs`, `GET/PUT/DELETE /admin/orgs/{id}`)
+- [x] API key rotation endpoint (`POST /admin/orgs/{id}/rotate-key`)
+- [x] Admin handler tests with sqlmock
+
 ---
 
 ### In Progress
@@ -41,17 +53,6 @@ _(None currently)_
 ---
 
 ### Pending
-
-#### Task 3: Org-Level Kill Switch
-**Priority:** High
-
-Add the ability to instantly disable all traffic for an organization.
-
-- [ ] Add `enabled` flag check in auth middleware
-- [ ] Admin endpoint to toggle org status (`PUT /admin/orgs/:id/enabled`)
-- [ ] Disabled org requests fail immediately with 403
-- [ ] No provider calls made for disabled orgs
-- [ ] Re-enabling restores traffic instantly
 
 #### Task 4: BYOK Vault – Secure Provider Key Storage
 **Priority:** High
@@ -97,16 +98,17 @@ Log basic request metadata asynchronously without impacting latency.
 - [ ] Logs persist even under load
 - [ ] Proxy continues if logging fails
 
-#### Task 8: Minimal Admin API
+#### Task 8: Minimal Admin API (Partially Complete)
 **Priority:** Medium
 
 Expose admin endpoints used by the dashboard.
 
-- [ ] Create/delete provider keys
-- [ ] Enable/disable org
-- [ ] List recent requests
+- [x] Enable/disable org (`PUT /admin/orgs/{id}/enabled`)
+- [x] Org CRUD endpoints
+- [x] API key rotation
+- [ ] Create/delete provider keys (depends on Task 4)
+- [ ] List recent requests (depends on Task 7)
 - [ ] Auth-protected endpoints
-- [ ] Changes take effect immediately
 
 #### Task 9: Streaming (SSE) Passthrough Support
 **Priority:** Medium

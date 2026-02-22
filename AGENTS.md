@@ -378,6 +378,95 @@ func closeBody(body io.Closer) {
 defer closeBody(resp.Body)
 ```
 
+## Admin API
+
+### Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/orgs` | List all organizations |
+| `POST` | `/admin/orgs` | Create organization (returns API key) |
+| `GET` | `/admin/orgs/{id}` | Get organization by ID |
+| `PUT` | `/admin/orgs/{id}` | Update organization name |
+| `DELETE` | `/admin/orgs/{id}` | Delete organization |
+| `PUT` | `/admin/orgs/{id}/enabled` | Enable/disable org (kill switch) |
+| `POST` | `/admin/orgs/{id}/rotate-key` | Rotate API key |
+
+### Kill Switch
+
+The kill switch allows instant disabling of an organization:
+
+```bash
+# Disable an org
+curl -X PUT http://localhost:8080/admin/orgs/{id}/enabled \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": false}'
+
+# Re-enable an org
+curl -X PUT http://localhost:8080/admin/orgs/{id}/enabled \
+  -H "Content-Type: application/json" \
+  -d '{"enabled": true}'
+```
+
+When disabled:
+- All requests with the org's API key return 403 immediately
+- No upstream provider calls are made
+- Re-enabling restores access instantly
+
+### Response Format
+
+Organization responses never expose the API key hash:
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "My Organization",
+  "enabled": true,
+  "created_at": "2024-01-15T10:30:00Z",
+  "updated_at": "2024-01-15T10:30:00Z"
+}
+```
+
+Create and rotate-key responses include the plaintext API key (only time it's available):
+
+```json
+{
+  "id": "...",
+  "name": "...",
+  "api_key": "np_550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+### Handler Pattern
+
+Admin handlers follow this pattern:
+
+```go
+type AdminOrgsHandler struct {
+    manager *org.Manager
+}
+
+func (h *AdminOrgsHandler) Get(w http.ResponseWriter, r *http.Request) {
+    id, err := parseOrgID(r)  // Use r.PathValue("id")
+    if err != nil {
+        writeAdminError(w, http.StatusBadRequest, "invalid organization ID")
+        return
+    }
+
+    o, err := h.manager.GetByID(r.Context(), id)
+    if err != nil {
+        if errors.Is(err, org.ErrNotFound) {
+            writeAdminError(w, http.StatusNotFound, "organization not found")
+            return
+        }
+        writeAdminError(w, http.StatusInternalServerError, "failed to get organization")
+        return
+    }
+
+    writeJSON(w, http.StatusOK, toOrgResponse(o))
+}
+```
+
 ## Key Design Decisions
 
 1. **Passthrough Proxy**: Requests forwarded as-is to preserve provider compatibility
@@ -387,3 +476,4 @@ defer closeBody(resp.Body)
 5. **OpenAI-Compatible**: API mimics OpenAI format for drop-in replacement
 6. **Manager/Datastore Separation**: Clean separation of persistence and business logic
 7. **Hashed API Keys**: Never store plaintext keys, always SHA-256 hash
+8. **Instant Kill Switch**: Org disable takes effect immediately, no caching

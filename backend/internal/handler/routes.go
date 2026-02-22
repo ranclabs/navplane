@@ -29,6 +29,29 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 
 	// Return proper 405 for other methods on protected endpoints
 	mux.HandleFunc("/v1/chat/completions", methodNotAllowedHandler("POST"))
+
+	// Admin API endpoints
+	// TODO: Add admin authentication (separate from org auth)
+	registerAdminRoutes(mux, deps)
+}
+
+// registerAdminRoutes registers admin API endpoints.
+// These endpoints are for dashboard/internal use only.
+func registerAdminRoutes(mux *http.ServeMux, deps *Deps) {
+	adminOrgs := NewAdminOrgsHandler(deps.OrgManager)
+
+	// Organization management
+	mux.HandleFunc("GET /admin/orgs", adminOrgs.List)
+	mux.HandleFunc("POST /admin/orgs", adminOrgs.Create)
+	mux.HandleFunc("GET /admin/orgs/{id}", adminOrgs.Get)
+	mux.HandleFunc("PUT /admin/orgs/{id}", adminOrgs.Update)
+	mux.HandleFunc("DELETE /admin/orgs/{id}", adminOrgs.Delete)
+
+	// Kill switch - enable/disable org
+	mux.HandleFunc("PUT /admin/orgs/{id}/enabled", adminOrgs.SetEnabled)
+
+	// API key rotation
+	mux.HandleFunc("POST /admin/orgs/{id}/rotate-key", adminOrgs.RotateAPIKey)
 }
 
 func methodNotAllowedHandler(allowedMethods string) http.HandlerFunc {
