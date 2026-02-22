@@ -6,11 +6,9 @@ WORKDIR /app
 # Install ca-certificates for HTTPS requests
 RUN apk --no-cache add ca-certificates
 
-# Copy go mod files
-COPY go.mod ./
-# Uncomment when you have dependencies:
-# COPY go.sum ./
-# RUN go mod download
+# Copy go mod files and download dependencies
+COPY go.mod go.sum ./
+RUN go mod download
 
 # Copy source code
 COPY . .
@@ -28,6 +26,9 @@ RUN apk --no-cache add ca-certificates wget
 
 # Copy the binary
 COPY --from=builder /app/navplane .
+
+# Copy migrations
+COPY --from=builder /app/migrations ./migrations
 
 # Expose port
 EXPOSE 8080

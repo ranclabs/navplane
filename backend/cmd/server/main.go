@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"navplane/internal/config"
+	"navplane/internal/database"
 	"navplane/internal/handler"
 )
 
@@ -18,6 +20,26 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
+
+	// Connect to database
+	db, err := database.Connect(cfg.Database)
+	if err != nil {
+		log.Fatalf("failed to connect to database: %v", err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			log.Printf("error closing database connection: %v", err)
+		}
+	}()
+	log.Println("database connection established")
+
+	// Run migrations
+	migrationsPath := getMigrationsPath()
+	if err := db.MigrateUp(migrationsPath); err != nil {
+		log.Fatalf("failed to run migrations: %v", err)
+	}
+	version, _, _ := db.MigrateVersion(migrationsPath)
+	log.Printf("database migrations complete (version: %d)", version)
 
 	mux := http.NewServeMux()
 	handler.RegisterRoutes(mux, cfg)
@@ -64,4 +86,32 @@ func main() {
 
 		log.Println("server shutdown complete")
 	}
+}
+
+// getMigrationsPath returns the path to the migrations directory.
+// It checks for the migrations folder relative to the executable or working directory.
+func getMigrationsPath() string {
+	// Check if MIGRATIONS_PATH env var is set
+	if path := os.Getenv("MIGRATIONS_PATH"); path != "" {
+		return path
+	}
+
+	// Try relative to working directory (for local development)
+	if _, err := os.Stat("migrations"); err == nil {
+		absPath, _ := filepath.Abs("migrations")
+		return absPath
+	}
+
+	// Try relative to executable (for Docker)
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		migrationsPath := filepath.Join(execDir, "migrations")
+		if _, err := os.Stat(migrationsPath); err == nil {
+			return migrationsPath
+		}
+	}
+
+	// Default fallback
+	return "/app/migrations"
 }
