@@ -26,43 +26,7 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// mockProviderKeyManager is a simple mock for testing.
-type mockProviderKeyManager struct {
-	keys map[string]string // provider -> decrypted key
-}
-
-func (m *mockProviderKeyManager) GetDecryptedKey(ctx context.Context, orgID uuid.UUID, providerName string) (string, error) {
-	if key, ok := m.keys[providerName]; ok {
-		return key, nil
-	}
-	return "", providerkey.ErrNotFound
-}
-
-func (m *mockProviderKeyManager) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*providerkey.ProviderKey, error) {
-	return nil, nil
-}
-
-func (m *mockProviderKeyManager) Create(ctx context.Context, input providerkey.CreateInput) (*providerkey.ProviderKey, error) {
-	return nil, nil
-}
-
-func (m *mockProviderKeyManager) Delete(ctx context.Context, id uuid.UUID) error {
-	return nil
-}
-
-func testDeps() *ChatCompletionsDeps {
-	return &ChatCompletionsDeps{
-		ProviderRegistry: provider.NewRegistry(),
-		ProviderKeyManager: &mockProviderKeyManagerWrapper{
-			keys: map[string]string{
-				"openai":    "sk-test-key-for-testing-only",
-				"anthropic": "sk-ant-test-key",
-			},
-		},
-	}
-}
-
-// mockProviderKeyManagerWrapper wraps mockProviderKeyManager to implement the interface.
+// mockProviderKeyManagerWrapper implements ProviderKeyGetter for testing.
 type mockProviderKeyManagerWrapper struct {
 	keys map[string]string
 }
