@@ -17,7 +17,6 @@ navplane/
 │   │   ├── handler/      # HTTP handlers
 │   │   ├── jwtauth/      # Auth0 JWT verification (JWKS, claims)
 │   │   ├── middleware/   # HTTP middleware (auth, logging, etc.)
-│   │   ├── openai/       # OpenAI-compatible types
 │   │   ├── org/          # Organization domain (manager/datastore pattern)
 │   │   ├── orgsettings/  # Per-org provider settings (model restrictions)
 │   │   ├── provider/     # Provider interface + implementations (OpenAI, Anthropic)
