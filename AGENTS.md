@@ -6,7 +6,7 @@ NavPlane is a high-performance AI gateway and control plane for governed LLM tra
 
 ## Architecture
 
-```
+```text
 navplane/
 ├── backend/          # Go API server (net/http, no framework)
 │   ├── cmd/server/   # Entry point
@@ -60,6 +60,7 @@ Use semantic commits:
 ## Environment Variables
 
 ### Required
+
 | Variable | Description |
 |----------|-------------|
 | `PROVIDER_BASE_URL` | Upstream AI provider URL |
@@ -67,6 +68,7 @@ Use semantic commits:
 | `DATABASE_URL` | PostgreSQL connection string |
 
 ### Optional
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | 8080 | HTTP server port |
