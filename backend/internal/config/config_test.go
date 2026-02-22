@@ -30,6 +30,7 @@ func TestLoad_Success(t *testing.T) {
 }
 
 func TestLoad_MissingProviderBaseURL(t *testing.T) {
+	t.Setenv("PROVIDER_BASE_URL", "") // Explicitly unset
 	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
@@ -45,6 +46,7 @@ func TestLoad_MissingProviderBaseURL(t *testing.T) {
 
 func TestLoad_MissingProviderAPIKey(t *testing.T) {
 	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
+	t.Setenv("PROVIDER_API_KEY", "") // Explicitly unset
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	_, err := Load()
@@ -58,7 +60,8 @@ func TestLoad_MissingProviderAPIKey(t *testing.T) {
 }
 
 func TestLoad_MissingBothProviderVars(t *testing.T) {
-	// Only set DATABASE_URL, don't set provider env vars
+	t.Setenv("PROVIDER_BASE_URL", "") // Explicitly unset
+	t.Setenv("PROVIDER_API_KEY", "")  // Explicitly unset
 	t.Setenv("DATABASE_URL", "postgres://user:pass@localhost:5432/testdb?sslmode=disable")
 
 	_, err := Load()
@@ -78,6 +81,7 @@ func TestLoad_MissingBothProviderVars(t *testing.T) {
 func TestLoad_MissingDatabaseURL(t *testing.T) {
 	t.Setenv("PROVIDER_BASE_URL", "https://api.openai.com/v1")
 	t.Setenv("PROVIDER_API_KEY", "sk-test-key-12345678901234567890")
+	t.Setenv("DATABASE_URL", "") // Explicitly unset
 
 	_, err := Load()
 	if err == nil {
