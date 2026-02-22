@@ -5,7 +5,7 @@ import (
 	"log"
 	"net/http"
 
-	"navplane/internal/config"
+	"lectr/internal/config"
 )
 
 // statusHandler returns an HTTP handler that has access to the config.
@@ -19,7 +19,7 @@ func statusHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(map[string]any{
-			"service": "navplane",
+			"service": "lectr",
 			"version": "0.1.0",
 			"status":  "operational",
 		}); err != nil {

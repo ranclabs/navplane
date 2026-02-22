@@ -3,7 +3,7 @@ package database
 import (
 	"testing"
 
-	"navplane/internal/config"
+	"lectr/internal/config"
 )
 
 func TestNew_InvalidURL(t *testing.T) {

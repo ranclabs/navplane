@@ -8,7 +8,7 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"navplane/internal/config"
+	"lectr/internal/config"
 )
 
 // DB wraps sql.DB to provide application-specific database operations.

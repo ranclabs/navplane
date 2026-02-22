@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"navplane/internal/org"
+	"lectr/internal/org"
 )
 
 func TestExtractBearerToken(t *testing.T) {
@@ -18,8 +18,8 @@ func TestExtractBearerToken(t *testing.T) {
 	}{
 		{
 			name:       "valid bearer token",
-			authHeader: "Bearer np_abc123",
-			wantToken:  "np_abc123",
+			authHeader: "Bearer lc_abc123",
+			wantToken:  "lc_abc123",
 			wantErr:    false,
 		},
 		{

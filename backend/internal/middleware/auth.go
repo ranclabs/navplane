@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"navplane/internal/org"
+	"lectr/internal/org"
 )
 
 // contextKey is a custom type for context keys to avoid collisions.
@@ -18,7 +18,7 @@ const (
 	OrgContextKey contextKey = "org"
 )
 
-// Auth creates authentication middleware that validates NavPlane API keys.
+// Auth creates authentication middleware that validates Lectr API keys.
 // Extracts Bearer token from Authorization header, authenticates via org manager,
 // and injects the org into the request context.
 func Auth(manager *org.Manager) func(http.Handler) http.Handler {

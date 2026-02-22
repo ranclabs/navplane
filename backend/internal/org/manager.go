@@ -73,7 +73,7 @@ func (m *Manager) GetByID(ctx context.Context, id uuid.UUID) (*Org, error) {
 // Returns ErrNotFound if key doesn't exist, ErrOrgDisabled if org is disabled.
 func (m *Manager) Authenticate(ctx context.Context, apiKey string) (*Org, error) {
 	apiKey = strings.TrimSpace(apiKey)
-	if apiKey == "" || !strings.HasPrefix(apiKey, "np_") {
+	if apiKey == "" || !strings.HasPrefix(apiKey, "lc_") {
 		return nil, ErrInvalidKey
 	}
 

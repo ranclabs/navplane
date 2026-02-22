@@ -1,8 +1,8 @@
-# NavPlane Project Tracker
+# Lectr Project Tracker
 
 ## Overview
 
-NavPlane is a passthrough proxy for AI providers that tracks usage and enables policy-based routing. Users replace their AI provider URL with NavPlane's URL and use NavPlane API keys.
+Lectr is a passthrough proxy for AI providers that tracks usage and enables policy-based routing. Users replace their AI provider URL with Lectr's URL and use Lectr API keys.
 
 ## Task Status
 
@@ -25,7 +25,7 @@ NavPlane is a passthrough proxy for AI providers that tracks usage and enables p
 
 - [x] Create org package with manager/datastore pattern
 - [x] Implement `Org` model (ID, Name, APIKeyHash, Enabled, timestamps)
-- [x] Implement API key generation (`np_<uuid>` format)
+- [x] Implement API key generation (`lc_<uuid>` format)
 - [x] Implement SHA-256 key hashing for storage
 - [x] Create auth middleware (Bearer token extraction)
 - [x] Wire auth middleware to `/v1/chat/completions`
@@ -95,7 +95,7 @@ Wire up provider keys to the proxy and rewrite requests.
 - [ ] Extract org from request context
 - [ ] Load decrypted provider key from vault
 - [ ] Inject provider-specific `Authorization` header
-- [ ] Remove NavPlane auth headers before forwarding
+- [ ] Remove Lectr auth headers before forwarding
 - [ ] Rewrite request URL to provider endpoint
 - [ ] Fail immediately if key is missing or provider disabled
 
@@ -105,7 +105,7 @@ Wire up provider keys to the proxy and rewrite requests.
 Create a Director function that rewrites outbound requests before forwarding.
 
 - [ ] Rewrite request URL to provider endpoint
-- [ ] Strip NavPlane auth headers
+- [ ] Strip Lectr auth headers
 - [ ] Inject provider headers
 - [ ] Preserve request body and method
 - [ ] Provider responses pass back unchanged
@@ -147,7 +147,7 @@ Support streaming chat completions using Server-Sent Events.
 #### Task 10: Documentation MVP
 **Priority:** Low
 
-Document how to use NavPlane MVP.
+Document how to use Lectr MVP.
 
 - [ ] Environment setup guide
 - [ ] How to integrate (baseURL swap)
@@ -160,7 +160,7 @@ Document how to use NavPlane MVP.
 Validate the MVP end-to-end with a real OpenAI client.
 
 - [ ] Demo app using OpenAI SDK
-- [ ] Switch baseURL to NavPlane
+- [ ] Switch baseURL to Lectr
 - [ ] Test streaming
 - [ ] Test key rotation
 - [ ] Test kill switch
@@ -182,8 +182,8 @@ Validate the MVP end-to-end with a real OpenAI client.
 | Decision | Rationale |
 |----------|-----------|
 | Manager/Datastore pattern | Clean separation of business logic and persistence |
-| SHA-256 hashed API keys | Never store plaintext NavPlane keys |
-| `np_` key prefix | Easy identification and validation |
+| SHA-256 hashed API keys | Never store plaintext Lectr keys |
+| `lc_` key prefix | Easy identification and validation |
 | PostgreSQL triggers for `updated_at` | Auto-update timestamps on modifications |
 | No exposed DB port | Security best practice |
 | sqlmock for testing | Unit test DB operations without real database |

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"navplane/internal/config"
+	"lectr/internal/config"
 )
 
 const (
@@ -32,7 +32,7 @@ func closeBody(body io.Closer) {
 //  3. Minimal parsing: Only check stream flag for routing
 //  4. SSE streaming: Stream responses with continuous flushing when stream=true
 //
-// NavPlane errors only for: 405, 400 (read fail), 413, 502, 504
+// Lectr errors only for: 405, 400 (read fail), 413, 502, 504
 type chatCompletionsHandler struct {
 	upstreamURL string
 	apiKey      string
@@ -219,7 +219,7 @@ func isStreamingRequest(body []byte) bool {
 
 func setUpstreamHeaders(upstream *http.Request, original *http.Request, apiKey string) {
 	upstream.Header.Set("Content-Type", "application/json")
-	upstream.Header.Set("User-Agent", "NavPlane/1.0")
+	upstream.Header.Set("User-Agent", "Lectr/1.0")
 	// SECURITY: Always use provider key, never forward client auth
 	upstream.Header.Set("Authorization", "Bearer "+apiKey)
 

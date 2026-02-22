@@ -9,11 +9,11 @@ func TestGenerateAPIKey(t *testing.T) {
 	key := GenerateAPIKey()
 
 	// Check prefix
-	if !strings.HasPrefix(key.Plaintext, "np_") {
-		t.Errorf("expected key to start with 'np_', got %s", key.Plaintext)
+	if !strings.HasPrefix(key.Plaintext, "lc_") {
+		t.Errorf("expected key to start with 'lc_', got %s", key.Plaintext)
 	}
 
-	// Check length (np_ + UUID = 3 + 36 = 39 chars)
+	// Check length (lc_ + UUID = 3 + 36 = 39 chars)
 	if len(key.Plaintext) != 39 {
 		t.Errorf("expected key length 39, got %d", len(key.Plaintext))
 	}
@@ -53,7 +53,7 @@ func TestGenerateAPIKey_Uniqueness(t *testing.T) {
 }
 
 func TestHashAPIKey(t *testing.T) {
-	key := "np_test-key-12345"
+	key := "lc_test-key-12345"
 	hash1 := HashAPIKey(key)
 	hash2 := HashAPIKey(key)
 
@@ -63,7 +63,7 @@ func TestHashAPIKey(t *testing.T) {
 	}
 
 	// Different input should produce different hash
-	hash3 := HashAPIKey("np_different-key")
+	hash3 := HashAPIKey("lc_different-key")
 	if hash1 == hash3 {
 		t.Error("different keys should produce different hashes")
 	}

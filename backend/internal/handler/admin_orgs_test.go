@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"navplane/internal/org"
+	"lectr/internal/org"
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"

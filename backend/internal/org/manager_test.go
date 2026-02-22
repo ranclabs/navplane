@@ -160,7 +160,7 @@ func TestManager_Authenticate_Success(t *testing.T) {
 	id := uuid.New()
 	now := time.Now()
 
-	apiKey := "np_test-key-12345"
+	apiKey := "lc_test-key-12345"
 	hash := HashAPIKey(apiKey)
 
 	rows := sqlmock.NewRows([]string{"id", "name", "api_key_hash", "enabled", "created_at", "updated_at"}).
@@ -218,7 +218,7 @@ func TestManager_Authenticate_NotFound(t *testing.T) {
 		WithArgs(sqlmock.AnyArg()).
 		WillReturnError(sql.ErrNoRows)
 
-	_, err = m.Authenticate(ctx, "np_nonexistent")
+	_, err = m.Authenticate(ctx, "lc_nonexistent")
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -237,7 +237,7 @@ func TestManager_Authenticate_OrgDisabled(t *testing.T) {
 	id := uuid.New()
 	now := time.Now()
 
-	apiKey := "np_test-key-12345"
+	apiKey := "lc_test-key-12345"
 	hash := HashAPIKey(apiKey)
 
 	rows := sqlmock.NewRows([]string{"id", "name", "api_key_hash", "enabled", "created_at", "updated_at"}).

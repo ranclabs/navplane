@@ -3,9 +3,9 @@ package handler
 import (
 	"net/http"
 
-	"navplane/internal/config"
-	"navplane/internal/middleware"
-	"navplane/internal/org"
+	"lectr/internal/config"
+	"lectr/internal/middleware"
+	"lectr/internal/org"
 )
 
 // Deps contains dependencies for route handlers.
