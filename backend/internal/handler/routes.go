@@ -6,12 +6,16 @@ import (
 	"navplane/internal/config"
 	"navplane/internal/middleware"
 	"navplane/internal/org"
+	"navplane/internal/provider"
+	"navplane/internal/providerkey"
 )
 
 // Deps contains dependencies for route handlers.
 type Deps struct {
-	Config     *config.Config
-	OrgManager *org.Manager
+	Config             *config.Config
+	OrgManager         *org.Manager
+	ProviderRegistry   *provider.Registry
+	ProviderKeyManager *providerkey.Manager
 }
 
 // RegisterRoutes registers all HTTP routes with the provided mux.
@@ -24,7 +28,11 @@ func RegisterRoutes(mux *http.ServeMux, deps *Deps) {
 	authMiddleware := middleware.Auth(deps.OrgManager)
 
 	// OpenAI-compatible API endpoints (auth required)
-	chatHandler := NewChatCompletionsHandler(deps.Config)
+	chatDeps := &ChatCompletionsDeps{
+		ProviderRegistry:   deps.ProviderRegistry,
+		ProviderKeyManager: deps.ProviderKeyManager,
+	}
+	chatHandler := NewChatCompletionsHandler(chatDeps)
 	mux.Handle("POST /v1/chat/completions", authMiddleware(http.HandlerFunc(chatHandler)))
 
 	// Return proper 405 for other methods on protected endpoints
@@ -52,6 +60,19 @@ func registerAdminRoutes(mux *http.ServeMux, deps *Deps) {
 
 	// API key rotation
 	mux.HandleFunc("POST /admin/orgs/{id}/rotate-key", adminOrgs.RotateAPIKey)
+
+	// Provider key management
+	if deps.ProviderKeyManager != nil {
+		adminProviderKeys := NewAdminProviderKeysHandler(deps.ProviderKeyManager, deps.ProviderRegistry)
+		mux.HandleFunc("GET /admin/orgs/{id}/provider-keys", adminProviderKeys.List)
+		mux.HandleFunc("POST /admin/orgs/{id}/provider-keys", adminProviderKeys.Create)
+		mux.HandleFunc("DELETE /admin/orgs/{id}/provider-keys/{keyId}", adminProviderKeys.Delete)
+	}
+
+	// Provider info
+	if deps.ProviderRegistry != nil {
+		mux.HandleFunc("GET /providers", handleListProviders(deps.ProviderRegistry))
+	}
 }
 
 func methodNotAllowedHandler(allowedMethods string) http.HandlerFunc {

@@ -44,6 +44,53 @@ NavPlane is a passthrough proxy for AI providers that tracks usage and enables p
 - [x] API key rotation endpoint (`POST /admin/orgs/{id}/rotate-key`)
 - [x] Admin handler tests with sqlmock
 
+#### Task 4: BYOK + Users + Provider System ✅
+**Branch:** `ronald/04-byok-users-providers` (in review)
+
+Implemented provider key storage, user management (via Auth0), and provider interface.
+
+**Database (Migration 000002):**
+- [x] `user_identities` table (auth0_user_id, email, is_admin)
+- [x] `org_members` table (user-org many-to-many with roles)
+- [x] `org_provider_settings` table (enable/disable providers per org)
+- [x] Update `provider_keys` schema for envelope encryption (encrypted_dek, dek_nonce)
+
+**Auth0 Integration (`jwtauth` package):**
+- [x] JWT verification with JWKS caching
+- [x] Extract user claims from JWT (sub, email, name, permissions)
+- [x] `Claims` type with helper methods
+- [x] JWT middleware for handlers
+
+**User Management (`user` package):**
+- [x] User identity model and datastore
+- [x] Upsert user identity from JWT claims
+- [x] Org membership management (add/remove members)
+- [x] Role-based access (owner, member)
+- [x] Admin access check (admins can access any org)
+
+**Provider System (`provider` package):**
+- [x] Provider interface (Name, BaseURL, Models, ValidateKey, AuthHeader)
+- [x] OpenAI provider implementation (gpt-4o, gpt-4o-mini, o1, etc.)
+- [x] Anthropic provider implementation (claude-3.5-sonnet, opus, haiku)
+- [x] Provider registry with auto-registration
+
+**BYOK Encryption (`providerkey` package):**
+- [x] Envelope encryption (AES-256-GCM for both KEK→DEK and DEK→key)
+- [x] Key rotation support via `ReEncryptDEK()` method
+- [x] Validate provider key before storage (calls provider API)
+- [x] Decrypt only in memory at request time
+- [x] Never expose encrypted data in JSON responses
+
+**Org Provider Settings (`orgsettings` package):**
+- [x] Enable/disable providers per org
+- [x] Allow/block specific models per org
+- [x] Model access check with priority rules
+
+**Config Updates:**
+- [x] Removed `PROVIDER_BASE_URL` and `PROVIDER_API_KEY`
+- [x] Added `ENCRYPTION_KEY`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`
+- [x] Optional `ENCRYPTION_KEY_NEW` for rotation
+
 ---
 
 ### In Progress
@@ -54,61 +101,19 @@ _(None currently)_
 
 ### Pending
 
-#### Task 4: BYOK + Users + Provider System
-**Priority:** High
-
-Implement provider key storage, user management (via Auth0), and provider interface.
-
-**Database (Migration 000002):**
-- [ ] `user_identities` table (auth0_user_id, email, is_admin)
-- [ ] `org_members` table (user-org many-to-many with roles)
-- [ ] `org_provider_settings` table (enable/disable providers per org)
-- [ ] Update `provider_keys` schema for envelope encryption
-
-**Auth0 Integration:**
-- [ ] JWT verification middleware (JWKS)
-- [ ] Extract user claims from JWT
-- [ ] Upsert user identity on login
-- [ ] Check org membership for authorization
-
-**Provider System:**
-- [ ] Provider interface (Name, BaseURL, Models, ValidateKey)
-- [ ] OpenAI provider implementation
-- [ ] Anthropic provider implementation
-- [ ] Provider registry for lookup
-
-**BYOK Encryption:**
-- [ ] Envelope encryption (KEK encrypts DEK, DEK encrypts key)
-- [ ] Key rotation support via `ENCRYPTION_KEY_NEW`
-- [ ] Validate provider key before storage
-- [ ] Decrypt only in memory at request time
-
-**Org Provider Settings:**
-- [ ] Enable/disable providers per org
-- [ ] Allow/block specific models per org
-
-#### Task 5: Header Swapping + Proxy Director
+#### Task 5: Header Swapping + Proxy Director (Mostly Complete)
 **Priority:** High
 
 Wire up provider keys to the proxy and rewrite requests.
 
-- [ ] Extract org from request context
-- [ ] Load decrypted provider key from vault
-- [ ] Inject provider-specific `Authorization` header
-- [ ] Remove NavPlane auth headers before forwarding
-- [ ] Rewrite request URL to provider endpoint
-- [ ] Fail immediately if key is missing or provider disabled
-
-#### Task 6: Reverse Proxy Director
-**Priority:** Medium
-
-Create a Director function that rewrites outbound requests before forwarding.
-
-- [ ] Rewrite request URL to provider endpoint
-- [ ] Strip NavPlane auth headers
-- [ ] Inject provider headers
-- [ ] Preserve request body and method
-- [ ] Provider responses pass back unchanged
+- [x] Extract org from request context (via auth middleware)
+- [x] Load decrypted provider key from vault
+- [x] Inject provider-specific `Authorization` header (using Provider interface)
+- [x] Rewrite request URL to provider endpoint (using Provider.BaseURL)
+- [x] Fail immediately if key is missing with clear error
+- [x] Model-based provider routing (gpt-* → OpenAI, claude-* → Anthropic)
+- [ ] Add orgsettings check (provider/model restrictions)
+- [ ] Check org.Enabled in proxy (currently only in API key auth)
 
 #### Task 7: Async Request Logging
 **Priority:** Medium
@@ -121,7 +126,7 @@ Log basic request metadata asynchronously without impacting latency.
 - [ ] Logs persist even under load
 - [ ] Proxy continues if logging fails
 
-#### Task 8: Minimal Admin API (Partially Complete)
+#### Task 8: Minimal Admin API (Mostly Complete)
 **Priority:** Medium
 
 Expose admin endpoints used by the dashboard.
@@ -129,20 +134,21 @@ Expose admin endpoints used by the dashboard.
 - [x] Enable/disable org (`PUT /admin/orgs/{id}/enabled`)
 - [x] Org CRUD endpoints
 - [x] API key rotation
-- [ ] Create/delete provider keys (depends on Task 4)
+- [x] Create/delete provider keys (`GET/POST /admin/orgs/{id}/provider-keys`)
+- [x] List providers (`GET /providers`)
 - [ ] List recent requests (depends on Task 7)
-- [ ] Auth-protected endpoints
+- [ ] Auth-protected endpoints (JWT middleware for admin routes)
 
-#### Task 9: Streaming (SSE) Passthrough Support
-**Priority:** Medium
+#### Task 9: Streaming (SSE) Passthrough Support ✅
+**Status:** Complete (implemented in Task 2)
 
 Support streaming chat completions using Server-Sent Events.
 
-- [ ] Detect `stream: true` in request
-- [ ] Use `http.Flusher` to stream responses
-- [ ] Handle client disconnects gracefully
-- [ ] No full-response buffering
-- [ ] Client disconnect terminates upstream request
+- [x] Detect `stream: true` in request
+- [x] Use `http.Flusher` to stream responses
+- [x] Handle client disconnects gracefully
+- [x] No full-response buffering
+- [x] Client disconnect terminates upstream request
 
 #### Task 10: Documentation MVP
 **Priority:** Low
