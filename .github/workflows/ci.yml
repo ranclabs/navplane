@@ -1,0 +1,118 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: backend/go.sum
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+          working-directory: backend
+          args: --timeout=5m
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: navplane_test
+          POSTGRES_PASSWORD: navplane_test
+          POSTGRES_DB: navplane_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U navplane_test -d navplane_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+          cache-dependency-path: backend/go.sum
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgres://navplane_test:navplane_test@localhost:5432/navplane_test?sslmode=disable
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Build binary
+        run: go build -o navplane ./cmd/server
+
+      - name: Run migrations
+        env:
+          DATABASE_URL: postgres://navplane_test:navplane_test@localhost:5432/navplane_test?sslmode=disable
+          PROVIDER_BASE_URL: https://api.openai.com/v1
+          PROVIDER_API_KEY: sk-test-key-for-ci-validation-only
+        run: |
+          # Start server briefly to run migrations, then stop
+          timeout 5 ./navplane || true
+          # Verify migrations ran by checking tables exist
+          PGPASSWORD=navplane_test psql -h localhost -U navplane_test -d navplane_test -c "\dt" | grep -q organizations
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          push: false
+          tags: navplane-backend:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build dashboard Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./dashboard
+          push: false
+          tags: navplane-dashboard:test
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

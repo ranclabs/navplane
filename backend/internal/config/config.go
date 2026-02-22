@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -15,10 +16,19 @@ type ProviderConfig struct {
 	APIKey  string
 }
 
+// DatabaseConfig holds PostgreSQL connection configuration.
+type DatabaseConfig struct {
+	URL             string
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime int // seconds
+}
+
 type Config struct {
 	Port        string
 	Environment string
 	Provider    ProviderConfig
+	Database    DatabaseConfig
 }
 
 // Load reads configuration from environment variables.
@@ -52,6 +62,12 @@ func Load() (*Config, error) {
 		missing = append(missing, "PROVIDER_API_KEY")
 	}
 
+	// Load database configuration (required)
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		missing = append(missing, "DATABASE_URL")
+	}
+
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("missing required environment variables: %v", missing)
 	}
@@ -66,6 +82,19 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid PROVIDER_API_KEY: %w", err)
 	}
 
+	// Validate database URL format
+	if err := validateDatabaseURL(databaseURL); err != nil {
+		return nil, fmt.Errorf("invalid DATABASE_URL: %w", err)
+	}
+
+	// Load optional database pool settings
+	dbConfig := DatabaseConfig{
+		URL:             databaseURL,
+		MaxOpenConns:    getEnvInt("DB_MAX_OPEN_CONNS", 25),
+		MaxIdleConns:    getEnvInt("DB_MAX_IDLE_CONNS", 5),
+		ConnMaxLifetime: getEnvInt("DB_CONN_MAX_LIFETIME", 300), // 5 minutes default
+	}
+
 	return &Config{
 		Port:        port,
 		Environment: env,
@@ -73,6 +102,7 @@ func Load() (*Config, error) {
 			BaseURL: providerBaseURL,
 			APIKey:  providerAPIKey,
 		},
+		Database: dbConfig,
 	}, nil
 }
 
@@ -99,7 +129,7 @@ func validateBaseURL(baseURL string) error {
 func validateAPIKey(apiKey string) error {
 	// Remove whitespace that might have been accidentally included
 	trimmed := strings.TrimSpace(apiKey)
-	
+
 	if trimmed != apiKey {
 		return fmt.Errorf("API key contains leading or trailing whitespace")
 	}
@@ -119,4 +149,35 @@ func validateAPIKey(apiKey string) error {
 	}
 
 	return nil
+}
+
+// validateDatabaseURL ensures the database URL is a valid PostgreSQL connection string.
+func validateDatabaseURL(dbURL string) error {
+	parsed, err := url.Parse(dbURL)
+	if err != nil {
+		return fmt.Errorf("malformed URL: %w", err)
+	}
+
+	if parsed.Scheme != "postgres" && parsed.Scheme != "postgresql" {
+		return fmt.Errorf("URL must use postgres or postgresql scheme, got %q", parsed.Scheme)
+	}
+
+	if parsed.Host == "" {
+		return fmt.Errorf("URL must include a host")
+	}
+
+	return nil
+}
+
+// getEnvInt reads an environment variable as an integer with a default fallback.
+func getEnvInt(key string, defaultVal int) int {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	intVal, err := strconv.Atoi(val)
+	if err != nil {
+		return defaultVal
+	}
+	return intVal
 }

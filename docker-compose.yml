@@ -1,15 +1,35 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-navplane}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-navplane_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-navplane}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-navplane} -d ${POSTGRES_DB:-navplane}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
   backend:
     build:
       context: ./backend
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - 8080:8080
     environment:
       - PORT=8080
       - ENV=${ENV:-production}
       - PROVIDER_BASE_URL=${PROVIDER_BASE_URL}
       - PROVIDER_API_KEY=${PROVIDER_API_KEY}
+      - DATABASE_URL=postgres://${POSTGRES_USER:-navplane}:${POSTGRES_PASSWORD:-navplane_dev}@postgres:5432/${POSTGRES_DB:-navplane}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
       interval: 10s
@@ -23,8 +43,11 @@ services:
       context: ./dashboard
       dockerfile: Dockerfile
     ports:
-      - "3000:80"
+      - 3000:80
     depends_on:
       backend:
         condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -2,7 +2,9 @@ package handler
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+
 	"navplane/internal/config"
 )
 
@@ -16,10 +18,12 @@ import (
 func statusHandler(cfg *config.Config) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
+		if err := json.NewEncoder(w).Encode(map[string]any{
 			"service": "navplane",
 			"version": "0.1.0",
 			"status":  "operational",
-		})
+		}); err != nil {
+			log.Printf("failed to write status response: %v", err)
+		}
 	}
 }
