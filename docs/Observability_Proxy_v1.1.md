@@ -21,7 +21,7 @@ The request path is sacred. Nothing may degrade latency, correctness, or reliabi
 3. No regression in latency or reliability
 4. Observability is useful, honest, and clearly labeled
 5. Infra cost is bounded
-6. Data is isolated per project
+6. Data is isolated per org
 7. System behaves predictably under failure
 8. Trust boundaries are explicitly defined
 
@@ -86,7 +86,7 @@ req = req.WithContext(r.Context())
 
 ---
 
-### 2) Project Key System (Isolation + Cost Control)
+### 2) Org Key System (Isolation + Cost Control)
 
 **Required Header**
 
@@ -98,16 +98,16 @@ X-Lectr-Key: lc_key_xxx
 
 | Key          | Purpose                   |
 | ------------ | ------------------------- |
-| `lc_key_xxx` | Project key (proxy usage) |
+| `lc_key_xxx` | Org key (proxy usage) |
 
 > Dashboard access is now handled by Auth0 — no separate dashboard token required.
 
 **Key Lifecycle (MVP)**
 
-**Create Project**
+**Create Org**
 
 ```
-POST /v1/projects
+POST /v1/orgs
 Authorization: Bearer LECTR_ADMIN_SECRET
 ```
 
@@ -115,14 +115,14 @@ Response:
 
 ```json
 {
-  "project_key": "lc_key_xxx"
+  "org_key": "lc_key_xxx"
 }
 ```
 
-**Revoke Project Key**
+**Revoke Org Key**
 
 ```
-POST /v1/projects/revoke
+POST /v1/orgs/revoke
 Authorization: Bearer LECTR_ADMIN_SECRET
 ```
 
@@ -133,7 +133,7 @@ Authorization: Bearer LECTR_ADMIN_SECRET
 Management endpoints protected by a static admin secret.
 
 - Stored as environment variable
-- Required for all project lifecycle endpoints
+- Required for all org lifecycle endpoints
 - Temporary until full auth is introduced
 
 ---
@@ -146,7 +146,7 @@ Lectr uses **Auth0** for dashboard authentication.
 
 1. User visits `dashboard.lectr.ai`
 2. Auth0 handles login / signup / session
-3. Dashboard scopes all data to authenticated user's projects
+3. Dashboard scopes all data to authenticated user's orgs
 4. No unauthenticated access permitted
 
 **Supported login methods (MVP)**
@@ -218,7 +218,7 @@ Client → sends OpenAI key → Proxy → forwards → OpenAI
 - streaming flag
 - token count
 - cost estimate
-- project key
+- org key
 
 **Rules**
 
@@ -279,7 +279,7 @@ https://dashboard.lectr.ai
 ```
 
 - Login required (Auth0)
-- Data scoped to authenticated user's projects
+- Data scoped to authenticated user's orgs
 - No sensitive data in URLs
 
 **Displays**
@@ -313,7 +313,7 @@ If events are dropped:
 
 ### 9) Cost Protection
 
-- In-memory rate limiting per project key
+- In-memory rate limiting per org key
 - Max request size (1–2MB)
 - Max concurrent streams
 - Request timeouts
@@ -407,8 +407,8 @@ Proxy → Event Channel → Worker → Postgres
 
 **Isolation**
 
-- ✅ Project key required
-- ✅ No cross-project data leakage
+- ✅ Org key required
+- ✅ No cross-org data leakage
 
 **Authentication**
 
@@ -458,7 +458,7 @@ Proxy → Event Channel → Worker → Postgres
 
 **Day 7**
 
-- Project key validation
+- Org key validation
 - Rate limiting
 - Request size limits
 
